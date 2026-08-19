@@ -375,26 +375,6 @@ export function Deployer() {
         });
       }
 
-      /*
-       * Standard CREATE deployment requires
-       * an EOA / legacy wallet.
-       */
-      const accountCode =
-        await publicClient.getBytecode(
-          {
-            address,
-          },
-        );
-
-      if (
-        accountCode &&
-        accountCode !== '0x'
-      ) {
-        throw new Error(
-          'This address appears to be a smart-contract wallet. Connect an EOA / legacy wallet to deploy this contract.',
-        );
-      }
-
       setDeploying(true);
 
       /*
@@ -594,7 +574,7 @@ export function Deployer() {
           >
             {isConnecting
               ? 'Opening wallet…'
-              : 'Connect Coinbase / Base legacy wallet'}
+              : 'Connect Coinbase / Base wallet'}
           </button>
 
           {injected && (
@@ -615,9 +595,8 @@ export function Deployer() {
           )}
 
           <p className="hint">
-            For deployment,
-            use an EOA / legacy
-            wallet.
+            Connect your wallet and approve
+            the Base deployment transaction.
           </p>
         </section>
       ) : (
