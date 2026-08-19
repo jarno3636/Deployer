@@ -455,7 +455,10 @@ export function Deployer() {
       }
 
       const gasWithBuffer =
-        (estimatedGas * 120n + 99n) / 100n;
+        (
+          estimatedGas * BigInt(120) +
+          BigInt(99)
+        ) / BigInt(100);
 
       const gasHex =
         `0x${gasWithBuffer.toString(16)}` as `0x${string}`;
