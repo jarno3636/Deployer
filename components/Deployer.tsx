@@ -438,10 +438,11 @@ export function Deployer() {
           ],
         });
 
+        const rawEstimateHex =
+          rawEstimate as `0x${string}`;
+
         estimatedGas =
-          typeof rawEstimate === 'bigint'
-            ? rawEstimate
-            : BigInt(rawEstimate);
+          BigInt(rawEstimateHex);
       } catch (estimateError) {
         const estimateMessage =
           estimateError instanceof Error
