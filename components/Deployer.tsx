@@ -11,13 +11,23 @@ import {
 } from 'wagmi';
 import { base } from 'wagmi/chains';
 import { getContractAddress } from 'viem';
-import { marketplaceAbi, marketplaceBytecode, compilerVersion } from '@/lib/marketplace.generated';
+import {
+  marketplaceAbi,
+  marketplaceBytecode,
+  compilerVersion,
+} from '../lib/marketplace.generated';
 
 const FEE_RECIPIENT = '0x0ba4aB96AFfe0486DeB9a04B9dB53B0c1a65f2d8';
+
+type VerificationState = 'idle' | 'submitting' | 'pending' | 'verified' | 'failed';
 
 function short(value?: string) {
   if (!value) return '—';
   return `${value.slice(0, 6)}…${value.slice(-4)}`;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function Deployer() {
@@ -32,15 +42,120 @@ export function Deployer() {
   const [hash, setHash] = useState<`0x${string}` | null>(null);
   const [contractAddress, setContractAddress] = useState<`0x${string}` | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [verificationState, setVerificationState] = useState<VerificationState>('idle');
+  const [verificationMessage, setVerificationMessage] = useState<string | null>(null);
+  const [verificationGuid, setVerificationGuid] = useState<string | null>(null);
 
   const onBase = chainId === base.id;
-  const coinbase = useMemo(() => connectors.find((c) => c.id === 'coinbaseWalletSDK'), [connectors]);
-  const injected = useMemo(() => connectors.find((c) => c.id === 'injected'), [connectors]);
+  const coinbase = useMemo(
+    () => connectors.find((c) => c.id === 'coinbaseWalletSDK'),
+    [connectors],
+  );
+  const injected = useMemo(
+    () => connectors.find((c) => c.id === 'injected'),
+    [connectors],
+  );
+
+  async function checkVerificationStatus(guid: string) {
+    const response = await fetch('/api/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'status', guid }),
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Could not check verification status.');
+    return data as { verified?: boolean; pending?: boolean; result?: string };
+  }
+
+  async function pollVerification(guid: string) {
+    setVerificationState('pending');
+    setVerificationMessage('BaseScan verification is processing…');
+
+    for (let attempt = 0; attempt < 12; attempt += 1) {
+      await sleep(2500);
+
+      try {
+        const status = await checkVerificationStatus(guid);
+        if (status.verified) {
+          setVerificationState('verified');
+          setVerificationMessage('Source code verified on BaseScan.');
+          return;
+        }
+
+        if (!status.pending && status.result) {
+          setVerificationState('failed');
+          setVerificationMessage(status.result);
+          return;
+        }
+      } catch (statusError) {
+        if (attempt === 11) {
+          setVerificationState('failed');
+          setVerificationMessage(
+            statusError instanceof Error ? statusError.message : 'Could not confirm verification status.',
+          );
+          return;
+        }
+      }
+    }
+
+    setVerificationState('pending');
+    setVerificationMessage('Verification was submitted and is still processing. Check BaseScan shortly.');
+  }
+
+  async function verifyContract(deployedAddress: `0x${string}`) {
+    setVerificationState('submitting');
+    setVerificationMessage('Submitting source code to BaseScan…');
+    setVerificationGuid(null);
+
+    try {
+      const response = await fetch('/api/verify', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'submit', contractAddress: deployedAddress }),
+      });
+
+      const data = await response.json();
+      if (!response.ok || !data.ok) {
+        throw new Error(data.error || 'Verification submission failed.');
+      }
+
+      if (data.verified) {
+        setVerificationState('verified');
+        setVerificationMessage('Source code is already verified on BaseScan.');
+        return;
+      }
+
+      if (!data.guid) throw new Error('Verification was submitted but no verification ID was returned.');
+
+      setVerificationGuid(data.guid);
+      await pollVerification(data.guid);
+    } catch (verificationError) {
+      setVerificationState('failed');
+      setVerificationMessage(
+        verificationError instanceof Error ? verificationError.message : 'Verification failed.',
+      );
+    }
+  }
+
+  async function retryVerification() {
+    if (!contractAddress) return;
+
+    if (verificationState === 'pending' && verificationGuid) {
+      await pollVerification(verificationGuid);
+      return;
+    }
+
+    await verifyContract(contractAddress);
+  }
 
   async function deploy() {
     setError(null);
     setHash(null);
     setContractAddress(null);
+    setVerificationState('idle');
+    setVerificationMessage(null);
+    setVerificationGuid(null);
 
     try {
       if (!address || !walletClient || !publicClient) throw new Error('Connect a wallet first.');
@@ -48,7 +163,9 @@ export function Deployer() {
 
       const accountCode = await publicClient.getBytecode({ address });
       if (accountCode && accountCode !== '0x') {
-        throw new Error('This address appears to be a smart-contract wallet. Base smart accounts cannot deploy this contract with normal CREATE. Connect an EOA / legacy wallet instead.');
+        throw new Error(
+          'This address appears to be a smart-contract wallet. Connect an EOA / legacy wallet to deploy this contract.',
+        );
       }
 
       const nonce = await publicClient.getTransactionCount({ address, blockTag: 'pending' });
@@ -65,11 +182,16 @@ export function Deployer() {
 
       const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
       if (receipt.status !== 'success') throw new Error('Deployment transaction reverted.');
-      setContractAddress(receipt.contractAddress ?? predicted);
+
+      const deployedAddress = (receipt.contractAddress ?? predicted) as `0x${string}`;
+      setContractAddress(deployedAddress);
+      setDeploying(false);
+
+      // Verification is intentionally separate from deployment success.
+      void verifyContract(deployedAddress);
     } catch (e) {
       const message = e instanceof Error ? e.message : 'Deployment failed.';
       setError(message);
-    } finally {
       setDeploying(false);
     }
   }
@@ -90,6 +212,7 @@ export function Deployer() {
         <div className="row"><span>Fee recipient</span><b>{short(FEE_RECIPIENT)}</b></div>
         <div className="row"><span>Constructor</span><b>None</b></div>
         <div className="row"><span>Compiler</span><b>{compilerVersion.split('+')[0]}</b></div>
+        <div className="row"><span>Verification</span><b className="good">Automatic</b></div>
       </section>
 
       {!isConnected ? (
@@ -102,11 +225,15 @@ export function Deployer() {
             {isConnecting ? 'Opening wallet…' : 'Connect Coinbase / Base legacy wallet'}
           </button>
           {injected && (
-            <button className="secondary" disabled={isConnecting} onClick={() => connect({ connector: injected })}>
+            <button
+              className="secondary"
+              disabled={isConnecting}
+              onClick={() => connect({ connector: injected })}
+            >
               Use browser wallet
             </button>
           )}
-          <p className="hint">For deployment, use an EOA / legacy wallet. Base Account smart wallets currently cannot deploy with normal CREATE.</p>
+          <p className="hint">For deployment, use an EOA / legacy wallet.</p>
         </section>
       ) : (
         <section className="actions">
@@ -116,7 +243,11 @@ export function Deployer() {
           </div>
 
           {!onBase ? (
-            <button className="primary" disabled={isSwitching} onClick={() => switchChainAsync({ chainId: base.id })}>
+            <button
+              className="primary"
+              disabled={isSwitching}
+              onClick={() => switchChainAsync({ chainId: base.id })}
+            >
               {isSwitching ? 'Switching…' : 'Switch to Base'}
             </button>
           ) : (
@@ -130,7 +261,9 @@ export function Deployer() {
       {hash && (
         <section className="result pending">
           <span>Transaction submitted</span>
-          <a href={`https://basescan.org/tx/${hash}`} target="_blank" rel="noreferrer">{short(hash)} ↗</a>
+          <a href={`https://basescan.org/tx/${hash}`} target="_blank" rel="noreferrer">
+            {short(hash)} ↗
+          </a>
         </section>
       )}
 
@@ -138,7 +271,31 @@ export function Deployer() {
         <section className="result success">
           <span>Marketplace deployed ✓</span>
           <strong>{contractAddress}</strong>
-          <a href={`https://basescan.org/address/${contractAddress}`} target="_blank" rel="noreferrer">View contract on BaseScan ↗</a>
+          <a
+            href={`https://basescan.org/address/${contractAddress}`}
+            target="_blank"
+            rel="noreferrer"
+          >
+            View contract on BaseScan ↗
+          </a>
+        </section>
+      )}
+
+      {contractAddress && verificationState !== 'idle' && (
+        <section className={`result ${verificationState === 'verified' ? 'success' : verificationState === 'failed' ? 'error' : 'pending'}`}>
+          <span>
+            {verificationState === 'verified'
+              ? 'BaseScan verified ✓'
+              : verificationState === 'failed'
+                ? 'Verification needs attention'
+                : 'Verifying source code…'}
+          </span>
+          {verificationMessage && <p>{verificationMessage}</p>}
+          {(verificationState === 'failed' || verificationState === 'pending') && (
+            <button className="secondary" onClick={retryVerification}>
+              {verificationState === 'pending' ? 'Check verification again' : 'Retry verification'}
+            </button>
+          )}
         </section>
       )}
 
@@ -151,7 +308,11 @@ export function Deployer() {
 
       <section className="safety">
         <b>Built-in deployment checks</b>
-        <p>The contract itself rejects every chain except Base and verifies that SEED, both Lore Land contracts, USDC and TOBY exist before deployment completes.</p>
+        <p>
+          The contract rejects every chain except Base and verifies that SEED, both Lore Land
+          contracts, USDC and TOBY exist before deployment completes. Verified source is submitted
+          automatically after a successful deployment.
+        </p>
       </section>
     </main>
   );
