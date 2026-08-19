@@ -416,6 +416,49 @@ export function Deployer() {
           nonce: BigInt(deploymentNonce),
         });
 
+      /*
+       * Estimate deployment gas ourselves before opening MetaMask.
+       *
+       * Some mobile/injected wallet paths fail to estimate contract
+       * creation gas correctly and show a 0 ETH gas fee. Supplying an
+       * explicit gas limit avoids relying on the wallet for that step.
+       *
+       * Add a 20% buffer so the deployment is not right on the estimate.
+       */
+      let estimatedGas: bigint;
+
+      try {
+        const rawEstimate = await publicClient.request({
+          method: 'eth_estimateGas',
+          params: [
+            {
+              from: address,
+              data: marketplaceBytecode,
+            },
+          ],
+        });
+
+        estimatedGas =
+          typeof rawEstimate === 'bigint'
+            ? rawEstimate
+            : BigInt(rawEstimate);
+      } catch (estimateError) {
+        const estimateMessage =
+          estimateError instanceof Error
+            ? estimateError.message
+            : String(estimateError);
+
+        throw new Error(
+          `Base could not estimate deployment gas before opening MetaMask. ${estimateMessage}`,
+        );
+      }
+
+      const gasWithBuffer =
+        (estimatedGas * 120n + 99n) / 100n;
+
+      const gasHex =
+        `0x${gasWithBuffer.toString(16)}` as `0x${string}`;
+
       let txHash: `0x${string}` | null = null;
 
       try {
@@ -425,6 +468,7 @@ export function Deployer() {
             {
               from: address,
               data: marketplaceBytecode,
+              gas: gasHex,
             },
           ],
         }) as `0x${string}`;
