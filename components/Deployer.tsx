@@ -10,6 +10,7 @@ import {
   useWalletClient,
 } from 'wagmi';
 import { base } from 'wagmi/chains';
+import { getContractAddress } from 'viem';
 
 import {
   marketplaceBytecode,
@@ -34,6 +35,25 @@ function short(value?: string) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForCodeAtAddress(
+  publicClient: NonNullable<ReturnType<typeof usePublicClient>>,
+  address: `0x${string}`,
+  attempts = 10,
+  delayMs = 2000,
+) {
+  for (let i = 0; i < attempts; i += 1) {
+    const code = await publicClient.getBytecode({ address });
+
+    if (code && code !== '0x') {
+      return true;
+    }
+
+    await sleep(delayMs);
+  }
+
+  return false;
 }
 
 export function Deployer() {
@@ -389,15 +409,74 @@ export function Deployer() {
        * sendTransaction() to avoid the kzg
        * generic type inference issue.
        */
-      const txHash = await walletClient.request({
-        method: 'eth_sendTransaction',
-        params: [
-          {
-            from: address,
-            data: marketplaceBytecode,
-          },
-        ],
-      }) as `0x${string}`;
+      /*
+       * Predict the CREATE address before asking the wallet to broadcast.
+       * This lets us safely recover from wallet-side "broadcast_failed"
+       * responses without blindly sending a second deployment.
+       */
+      const deploymentNonce =
+        await publicClient.getTransactionCount({
+          address,
+          blockTag: 'pending',
+        });
+
+      const predictedAddress =
+        getContractAddress({
+          from: address,
+          nonce: BigInt(deploymentNonce),
+        });
+
+      let txHash: `0x${string}` | null = null;
+
+      try {
+        txHash = await walletClient.request({
+          method: 'eth_sendTransaction',
+          params: [
+            {
+              from: address,
+              data: marketplaceBytecode,
+            },
+          ],
+        }) as `0x${string}`;
+      } catch (walletError) {
+        /*
+         * Trust Wallet can occasionally report that broadcasting failed
+         * after confirmation. Do not immediately retry: the transaction
+         * may still have reached Base.
+         *
+         * Check the deterministic CREATE address first.
+         */
+        const landed =
+          await waitForCodeAtAddress(
+            publicClient,
+            predictedAddress,
+            10,
+            2000,
+          );
+
+        if (landed) {
+          setContractAddress(predictedAddress);
+          setDeploying(false);
+
+          void verifyContract(
+            predictedAddress,
+          );
+
+          return;
+        }
+
+        const walletMessage =
+          walletError instanceof Error
+            ? walletError.message
+            : String(walletError);
+
+        throw new Error(
+          walletMessage.toLowerCase().includes('service unavailable') ||
+          walletMessage.toLowerCase().includes('broadcast_failed')
+            ? 'Trust Wallet could not broadcast the deployment and no contract appeared on Base. No second deployment was sent. Tap Deploy Marketplace again when ready.'
+            : walletMessage,
+        );
+      }
 
       setHash(txHash);
 
@@ -418,16 +497,29 @@ export function Deployer() {
         );
       }
 
-      if (
-        !receipt.contractAddress
-      ) {
-        throw new Error(
-          'Deployment succeeded but no contract address was returned.',
-        );
-      }
-
       const deployedAddress =
-        receipt.contractAddress;
+        receipt.contractAddress ??
+        predictedAddress;
+
+      /*
+       * If a receipt somehow lacks contractAddress, confirm the predicted
+       * address actually has code before treating deployment as successful.
+       */
+      if (!receipt.contractAddress) {
+        const hasCode =
+          await waitForCodeAtAddress(
+            publicClient,
+            predictedAddress,
+            3,
+            1000,
+          );
+
+        if (!hasCode) {
+          throw new Error(
+            'Deployment transaction confirmed but no contract code was found at the predicted address.',
+          );
+        }
+      }
 
       setContractAddress(
         deployedAddress,
