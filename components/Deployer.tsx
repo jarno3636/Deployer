@@ -124,16 +124,6 @@ export function Deployer() {
   const onBase =
     chainId === base.id;
 
-  const coinbase =
-    useMemo(
-      () =>
-        connectors.find(
-          (connector) =>
-            connector.id === 'coinbaseWalletSDK',
-        ),
-      [connectors],
-    );
-
   const injected =
     useMemo(
       () =>
@@ -440,7 +430,7 @@ export function Deployer() {
         }) as `0x${string}`;
       } catch (walletError) {
         /*
-         * Trust Wallet can occasionally report that broadcasting failed
+         * A wallet can occasionally report that broadcasting failed
          * after confirmation. Do not immediately retry: the transaction
          * may still have reached Base.
          *
@@ -473,7 +463,7 @@ export function Deployer() {
         throw new Error(
           walletMessage.toLowerCase().includes('service unavailable') ||
           walletMessage.toLowerCase().includes('broadcast_failed')
-            ? 'Trust Wallet could not broadcast the deployment and no contract appeared on Base. No second deployment was sent. Tap Deploy Marketplace again when ready.'
+            ? 'MetaMask could not broadcast the deployment and no contract appeared on Base. No second deployment was sent. Check that MetaMask is on Base Mainnet and try again.'
             : walletMessage,
         );
       }
@@ -653,42 +643,25 @@ export function Deployer() {
           <button
             className="primary"
             disabled={
-              !coinbase ||
+              !injected ||
               isConnecting
             }
             onClick={() =>
-              coinbase &&
+              injected &&
               connect({
                 connector:
-                  coinbase,
+                  injected,
               })
             }
           >
             {isConnecting
-              ? 'Opening wallet…'
-              : 'Connect Coinbase / Base wallet'}
+              ? 'Opening MetaMask…'
+              : 'Connect MetaMask'}
           </button>
 
-          {injected && (
-            <button
-              className="secondary"
-              disabled={
-                isConnecting
-              }
-              onClick={() =>
-                connect({
-                  connector:
-                    injected,
-                })
-              }
-            >
-              Use browser wallet
-            </button>
-          )}
-
           <p className="hint">
-            Connect your wallet and approve
-            the Base deployment transaction.
+            MetaMask is preferred for deployment.
+            Make sure the selected network is Base Mainnet.
           </p>
         </section>
       ) : (
