@@ -1,3 +1,4 @@
+\
 'use client';
 
 import { useMemo, useState } from 'react';
@@ -33,9 +34,7 @@ function short(value?: string) {
 }
 
 function sleep(ms: number) {
-  return new Promise((resolve) =>
-    setTimeout(resolve, ms),
-  );
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 export function Deployer() {
@@ -111,8 +110,7 @@ export function Deployer() {
       () =>
         connectors.find(
           (connector) =>
-            connector.id ===
-            'coinbaseWalletSDK',
+            connector.id === 'coinbaseWalletSDK',
         ),
       [connectors],
     );
@@ -122,8 +120,7 @@ export function Deployer() {
       () =>
         connectors.find(
           (connector) =>
-            connector.id ===
-            'injected',
+            connector.id === 'injected',
         ),
       [connectors],
     );
@@ -240,8 +237,7 @@ export function Deployer() {
   }
 
   async function verifyContract(
-    deployedAddress:
-      `0x${string}`,
+    deployedAddress: `0x${string}`,
   ) {
     setVerificationState(
       'submitting',
@@ -317,8 +313,7 @@ export function Deployer() {
       );
 
       setVerificationMessage(
-        verificationError instanceof
-          Error
+        verificationError instanceof Error
           ? verificationError.message
           : 'Verification failed.',
       );
@@ -404,25 +399,26 @@ export function Deployer() {
       setDeploying(true);
 
       /*
-       * Constructor has ZERO arguments.
+       * Constructor has zero arguments.
        *
-       * Therefore the contract creation
-       * transaction data is simply the
-       * compiled creation bytecode.
+       * The contract creation transaction
+       * therefore contains only the compiled
+       * creation bytecode.
        *
-       * This avoids viem deployContract()
-       * generic overload inference issues
-       * in newer viem versions.
+       * Use raw eth_sendTransaction here
+       * instead of viem deployContract() or
+       * sendTransaction() to avoid the kzg
+       * generic type inference issue.
        */
-      const txHash =
-        await walletClient.sendTransaction(
+      const txHash = await walletClient.request({
+        method: 'eth_sendTransaction',
+        params: [
           {
-            account: address,
-            chain: base,
-            data:
-              marketplaceBytecode,
+            from: address,
+            data: marketplaceBytecode,
           },
-        );
+        ],
+      }) as `0x${string}`;
 
       setHash(txHash);
 
@@ -443,10 +439,6 @@ export function Deployer() {
         );
       }
 
-      /*
-       * Contract creation receipts contain
-       * the newly deployed contract address.
-       */
       if (
         !receipt.contractAddress
       ) {
@@ -467,18 +459,16 @@ export function Deployer() {
       /*
        * Verification runs separately.
        *
-       * Even if BaseScan verification
-       * encounters an API issue, the
-       * successful deployment remains
-       * clearly successful.
+       * A BaseScan API issue must never
+       * make a successful deployment appear
+       * to have failed.
        */
       void verifyContract(
         deployedAddress,
       );
     } catch (deploymentError) {
       const message =
-        deploymentError instanceof
-          Error
+        deploymentError instanceof Error
           ? deploymentError.message
           : 'Deployment failed.';
 
