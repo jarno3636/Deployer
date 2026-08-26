@@ -2,8 +2,8 @@ import { NextResponse } from 'next/server';
 import {
   etherscanCompilerVersion,
   etherscanContractName,
-  marketplaceStandardJsonInput,
-} from '../../../lib/marketplace.verification.generated';
+  indexRouterStandardJsonInput,
+} from '../../../lib/index-router.verification.generated';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -21,7 +21,14 @@ function isAddress(value: unknown): value is string {
   return typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value);
 }
 
-async function submitVerification(contractAddress: string) {
+function isConstructorArguments(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-fA-F0-9]*$/.test(value);
+}
+
+async function submitVerification(
+  contractAddress: string,
+  constructorArguments: string,
+) {
   const url = new URL(ETHERSCAN_V2);
   url.searchParams.set('apikey', apiKey());
   url.searchParams.set('chainid', BASE_CHAIN_ID);
@@ -30,13 +37,13 @@ async function submitVerification(contractAddress: string) {
 
   const body = new URLSearchParams({
     contractaddress: contractAddress,
-    sourceCode: marketplaceStandardJsonInput,
+    sourceCode: indexRouterStandardJsonInput,
     contractname: etherscanContractName,
     compilerversion: etherscanCompilerVersion,
     codeformat: 'solidity-standard-json-input',
     optimizationUsed: '1',
     runs: '200',
-    constructorArguments: '',
+    constructorArguments,
     licenseType: '3',
   });
 
@@ -70,7 +77,10 @@ export async function POST(request: Request) {
 
     if (payload?.action === 'status') {
       if (typeof payload.guid !== 'string' || !payload.guid) {
-        return NextResponse.json({ ok: false, error: 'Missing verification GUID.' }, { status: 400 });
+        return NextResponse.json(
+          { ok: false, error: 'Missing verification GUID.' },
+          { status: 400 },
+        );
       }
 
       const data = await checkVerification(payload.guid);
@@ -87,10 +97,24 @@ export async function POST(request: Request) {
     }
 
     if (!isAddress(payload?.contractAddress)) {
-      return NextResponse.json({ ok: false, error: 'Invalid contract address.' }, { status: 400 });
+      return NextResponse.json(
+        { ok: false, error: 'Invalid contract address.' },
+        { status: 400 },
+      );
     }
 
-    const data = await submitVerification(payload.contractAddress);
+    if (!isConstructorArguments(payload?.constructorArguments)) {
+      return NextResponse.json(
+        { ok: false, error: 'Invalid constructor arguments.' },
+        { status: 400 },
+      );
+    }
+
+    const data = await submitVerification(
+      payload.contractAddress,
+      payload.constructorArguments,
+    );
+
     const result = String(data.result ?? '');
 
     if (data.status !== '1') {
@@ -100,7 +124,10 @@ export async function POST(request: Request) {
       }
 
       return NextResponse.json(
-        { ok: false, error: result || data.message || 'Verification submission failed.' },
+        {
+          ok: false,
+          error: result || data.message || 'Verification submission failed.',
+        },
         { status: 502 },
       );
     }
