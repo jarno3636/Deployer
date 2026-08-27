@@ -1,28 +1,13 @@
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 import solc from 'solc';
-import { createRequire } from 'module';
 
-const require = createRequire(import.meta.url);
+const root = process.cwd();
 
-const ROOT = process.cwd();
-
-const CONTRACT_PATH = path.join(
-  ROOT,
-  'contracts',
-  'AiStocksIndexLaunchV1.sol',
-);
-
-const OUTPUT_PATH = path.join(
-  ROOT,
-  'lib',
-  'marketplace.generated.ts',
-);
-
-const SOURCE_KEY =
+const entryUnit =
   'contracts/AiStocksIndexLaunchV1.sol';
 
-const CONTRACT_NAMES = [
+const contractNames = [
   'AiStocksAssetRegistryV1',
   'AiStocksPolicyManagerV1',
   'AiStocksIndexFactoryV1',
@@ -30,106 +15,121 @@ const CONTRACT_NAMES = [
   'AiStocksIndexRedeemRouterV1',
 ];
 
-function readFile(filePath) {
-  return fs.readFileSync(filePath, 'utf8');
-}
-
-function resolveImport(importPath) {
-  try {
-    if (importPath.startsWith('@')) {
-      return require.resolve(importPath, {
-        paths: [ROOT],
-      });
-    }
-
-    return path.resolve(
-      path.dirname(CONTRACT_PATH),
-      importPath,
+function fileForUnit(unit) {
+  if (unit.startsWith('@')) {
+    return path.join(
+      root,
+      'node_modules',
+      unit,
     );
-  } catch {
-    return null;
   }
+
+  return path.join(
+    root,
+    unit,
+  );
 }
 
-function findImports(importPath) {
-  const resolved =
-    resolveImport(importPath);
-
-  if (!resolved) {
-    return {
-      error: `Could not resolve import: ${importPath}`,
-    };
-  }
-
-  try {
-    return {
-      contents: readFile(resolved),
-    };
-  } catch {
-    return {
-      error: `Could not read import: ${importPath}`,
-    };
-  }
-}
-
-function collectSources(
-  sourceKey,
-  sourceContents,
-  collected = {},
+function normalizeUnit(
+  parentUnit,
+  imported,
 ) {
-  if (collected[sourceKey]) {
-    return collected;
+  if (imported.startsWith('.')) {
+    return path.posix.normalize(
+      path.posix.join(
+        path.posix.dirname(
+          parentUnit,
+        ),
+        imported,
+      ),
+    );
   }
 
-  collected[sourceKey] = {
-    content: sourceContents,
-  };
+  return imported;
+}
 
-  const importRegex =
-    /import\s+(?:(?:[^'"]*from\s*)?)["']([^"']+)["'];/g;
+function extractImports(source) {
+  const imports = [];
+
+  const re =
+    /import\s+(?:(?:[^'"]*?\s+from\s+)?)[\"']([^\"']+)[\"']\s*;/g;
 
   let match;
 
   while (
-    (match =
-      importRegex.exec(
-        sourceContents,
-      ))
+    (match = re.exec(source)) !==
+    null
   ) {
-    const importPath =
-      match[1];
+    imports.push(match[1]);
+  }
 
-    const resolved =
-      resolveImport(importPath);
+  return imports;
+}
 
-    if (!resolved) {
-      throw new Error(
-        `Unable to resolve ${importPath}`,
-      );
-    }
+const sources = {};
+const visiting = new Set();
 
-    const importedSource =
-      readFile(resolved);
+function addSource(unit) {
+  if (
+    sources[unit] ||
+    visiting.has(unit)
+  ) {
+    return;
+  }
 
-    collectSources(
-      importPath,
-      importedSource,
-      collected,
+  visiting.add(unit);
+
+  const file =
+    fileForUnit(unit);
+
+  if (
+    !fs.existsSync(file)
+  ) {
+    throw new Error(
+      `Import not found while building verification input: ${unit}`,
     );
   }
 
-  return collected;
+  const content =
+    fs.readFileSync(
+      file,
+      'utf8',
+    );
+
+  sources[unit] = {
+    content,
+  };
+
+  for (
+    const imported of
+    extractImports(content)
+  ) {
+    addSource(
+      normalizeUnit(
+        unit,
+        imported,
+      ),
+    );
+  }
+
+  visiting.delete(unit);
 }
 
-const mainSource =
-  readFile(CONTRACT_PATH);
+addSource(entryUnit);
 
-const sources =
-  collectSources(
-    SOURCE_KEY,
-    mainSource,
-  );
-
+/*
+ * IMPORTANT:
+ *
+ * viaIR is enabled here because this
+ * contract bundle is large enough to
+ * trigger Solidity stack-depth/Yul
+ * compilation failures through the
+ * normal compilation pipeline.
+ *
+ * These exact settings are also
+ * preserved in standardJsonInput
+ * for BaseScan verification.
+ */
 const input = {
   language: 'Solidity',
 
@@ -148,7 +148,7 @@ const input = {
         '*': [
           'abi',
           'evm.bytecode.object',
-          'evm.deployedBytecode.object',
+          'metadata',
         ],
       },
     },
@@ -159,134 +159,176 @@ const output =
   JSON.parse(
     solc.compile(
       JSON.stringify(input),
-      {
-        import: findImports,
-      },
     ),
   );
 
-if (output.errors) {
-  for (const error of output.errors) {
-    console.log(
-      error.formattedMessage,
-    );
-  }
-
-  const fatal =
-    output.errors.filter(
-      (error) =>
-        error.severity ===
-        'error',
-    );
-
-  if (fatal.length) {
-    process.exit(1);
-  }
-}
-
-const compiled =
-  output.contracts?.[
-    SOURCE_KEY
-  ];
-
-if (!compiled) {
-  throw new Error(
-    'No compiled contracts found.',
+const errors =
+  (
+    output.errors ?? []
+  ).filter(
+    (error) =>
+      error.severity ===
+      'error',
   );
+
+if (
+  errors.length
+) {
+  console.error(
+    errors
+      .map(
+        (error) =>
+          error.formattedMessage,
+      )
+      .join('\n'),
+  );
+
+  process.exit(1);
 }
 
 const artifacts = {};
 
 for (
-  const contractName of
-  CONTRACT_NAMES
+  const name of
+  contractNames
 ) {
-  const contract =
-    compiled[contractName];
+  const artifact =
+    output.contracts?.[
+      entryUnit
+    ]?.[name];
 
-  if (!contract) {
+  if (!artifact) {
     throw new Error(
-      `Missing compiled contract: ${contractName}`,
+      `Missing compiled artifact: ${name}`,
     );
   }
 
-  const bytecodeObject =
-    contract.evm?.bytecode
-      ?.object;
+  const bytecode =
+    `0x${artifact.evm.bytecode.object}`;
 
-  if (!bytecodeObject) {
+  if (
+    bytecode === '0x'
+  ) {
     throw new Error(
-      `Missing bytecode for ${contractName}`,
+      `Compiled bytecode is empty: ${name}`,
     );
   }
 
-  artifacts[contractName] = {
-    abi: contract.abi,
+  artifacts[name] = {
+    abi:
+      artifact.abi,
 
-    bytecode:
-      `0x${bytecodeObject}`,
+    bytecode,
   };
 }
 
-const compilerVersion =
+const rawCompilerVersion =
   solc.version();
 
+const compilerVersion =
+  rawCompilerVersion.replace(
+    /\.Emscripten\.clang$/,
+    '',
+  );
+
+const etherscanCompilerVersion =
+  `v${compilerVersion}`;
+
+/*
+ * This is the EXACT input used for
+ * compilation and is therefore also
+ * the input we submit for automatic
+ * BaseScan/Etherscan verification.
+ */
+const standardJsonInput =
+  JSON.stringify(input);
+
 const generated =
-`// AUTO-GENERATED FILE.
-// DO NOT EDIT MANUALLY.
-// Generated by scripts/compile-contract.mjs
+  `// AUTO-GENERATED by scripts/compile-contract.mjs. Do not edit.\n` +
+  `export const launchArtifacts = ${JSON.stringify(
+    artifacts,
+    null,
+    2,
+  )} as const;\n` +
+  `export const compilerVersion = ${JSON.stringify(
+    rawCompilerVersion,
+  )} as const;\n`;
 
-export const compilerVersion = ${JSON.stringify(
-  compilerVersion,
-)} as const;
+const etherscanNames =
+  Object.fromEntries(
+    contractNames.map(
+      (name) => [
+        name,
+        `${entryUnit}:${name}`,
+      ],
+    ),
+  );
 
-export const verificationInput = ${JSON.stringify(
-  JSON.stringify(input),
-)} as const;
-
-export const contractArtifacts = ${JSON.stringify(
-  artifacts,
-  null,
-  2,
-)} as const;
-`;
+const verificationGenerated =
+  `// AUTO-GENERATED by scripts/compile-contract.mjs. Server-side only. Do not edit.\n` +
+  `export const launchStandardJsonInput = ${JSON.stringify(
+    standardJsonInput,
+  )} as const;\n` +
+  `export const etherscanCompilerVersion = ${JSON.stringify(
+    etherscanCompilerVersion,
+  )} as const;\n` +
+  `export const etherscanContractNames = ${JSON.stringify(
+    etherscanNames,
+    null,
+    2,
+  )} as const;\n`;
 
 fs.mkdirSync(
-  path.dirname(OUTPUT_PATH),
+  path.join(
+    root,
+    'lib',
+  ),
   {
     recursive: true,
   },
 );
 
 fs.writeFileSync(
-  OUTPUT_PATH,
+  path.join(
+    root,
+    'lib',
+    'launch.generated.ts',
+  ),
   generated,
 );
 
+fs.writeFileSync(
+  path.join(
+    root,
+    'lib',
+    'launch.verification.generated.ts',
+  ),
+  verificationGenerated,
+);
+
 console.log(
-  `Compiled AiStocks launch suite with ${compilerVersion}`,
+  `Compiled AiStocksIndexLaunchV1 with ${rawCompilerVersion}`,
 );
 
 for (
-  const contractName of
-  CONTRACT_NAMES
+  const name of
+  contractNames
 ) {
-  const bytecode =
-    artifacts[
-      contractName
-    ].bytecode;
-
   console.log(
-    `${contractName}: ${
-      (bytecode.length - 2) /
-      2
-    } bytes`,
+    `${name}: ${
+      (
+        artifacts[name]
+          .bytecode.length -
+        2
+      ) / 2
+    } creation bytes`,
   );
 }
 
 console.log(
   `Verification sources: ${
-    Object.keys(sources)
-      .length
+    Object.keys(
+      sources,
+    ).length
   }`,
 );
