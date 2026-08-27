@@ -1,15 +1,17 @@
 import { NextResponse } from 'next/server';
 import {
   etherscanCompilerVersion,
-  etherscanContractName,
-  indexRouterStandardJsonInput,
-} from '../../../lib/index-router.verification.generated';
+  etherscanContractNames,
+  launchStandardJsonInput,
+} from '../../../lib/launch.verification.generated';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const ETHERSCAN_V2 = 'https://api.etherscan.io/v2/api';
 const BASE_CHAIN_ID = '8453';
+
+const allowedContracts = new Set(Object.keys(etherscanContractNames));
 
 function apiKey() {
   const key = process.env.ETHERSCAN_API_KEY;
@@ -21,14 +23,15 @@ function isAddress(value: unknown): value is string {
   return typeof value === 'string' && /^0x[a-fA-F0-9]{40}$/.test(value);
 }
 
-function isConstructorArguments(value: unknown): value is string {
-  return typeof value === 'string' && /^[a-fA-F0-9]*$/.test(value);
-}
-
 async function submitVerification(
   contractAddress: string,
+  contractKey: string,
   constructorArguments: string,
 ) {
+  const contractName = etherscanContractNames[
+    contractKey as keyof typeof etherscanContractNames
+  ];
+
   const url = new URL(ETHERSCAN_V2);
   url.searchParams.set('apikey', apiKey());
   url.searchParams.set('chainid', BASE_CHAIN_ID);
@@ -37,8 +40,8 @@ async function submitVerification(
 
   const body = new URLSearchParams({
     contractaddress: contractAddress,
-    sourceCode: indexRouterStandardJsonInput,
-    contractname: etherscanContractName,
+    sourceCode: launchStandardJsonInput,
+    contractname: contractName,
     compilerversion: etherscanCompilerVersion,
     codeformat: 'solidity-standard-json-input',
     optimizationUsed: '1',
@@ -54,8 +57,11 @@ async function submitVerification(
     cache: 'no-store',
   });
 
-  const data = await response.json();
-  return data as { status: string; message: string; result: string };
+  return (await response.json()) as {
+    status: string;
+    message: string;
+    result: string;
+  };
 }
 
 async function checkVerification(guid: string) {
@@ -67,8 +73,11 @@ async function checkVerification(guid: string) {
   url.searchParams.set('guid', guid);
 
   const response = await fetch(url, { cache: 'no-store' });
-  const data = await response.json();
-  return data as { status: string; message: string; result: string };
+  return (await response.json()) as {
+    status: string;
+    message: string;
+    result: string;
+  };
 }
 
 export async function POST(request: Request) {
@@ -103,7 +112,22 @@ export async function POST(request: Request) {
       );
     }
 
-    if (!isConstructorArguments(payload?.constructorArguments)) {
+    if (
+      typeof payload?.contractKey !== 'string' ||
+      !allowedContracts.has(payload.contractKey)
+    ) {
+      return NextResponse.json(
+        { ok: false, error: 'Invalid contract key.' },
+        { status: 400 },
+      );
+    }
+
+    const constructorArguments =
+      typeof payload?.constructorArguments === 'string'
+        ? payload.constructorArguments.replace(/^0x/, '')
+        : '';
+
+    if (!/^[a-fA-F0-9]*$/.test(constructorArguments)) {
       return NextResponse.json(
         { ok: false, error: 'Invalid constructor arguments.' },
         { status: 400 },
@@ -112,14 +136,13 @@ export async function POST(request: Request) {
 
     const data = await submitVerification(
       payload.contractAddress,
-      payload.constructorArguments,
+      payload.contractKey,
+      constructorArguments,
     );
-
     const result = String(data.result ?? '');
 
     if (data.status !== '1') {
-      const alreadyVerified = /already verified/i.test(result);
-      if (alreadyVerified) {
+      if (/already verified/i.test(result)) {
         return NextResponse.json({ ok: true, verified: true, result });
       }
 
