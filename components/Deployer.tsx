@@ -26,6 +26,16 @@ import {
 const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as const;
 const LAUNCH_FEE_RECIPIENT = '0x5f9c24e66b74404bef89c1ef7222e1771a72fab9' as const;
 
+const PRODUCTION_OWNER = '0x25BE27a17580F59206061B8823E3c0FbC1F7c52E' as const;
+const PRODUCTION_LAUNCH_FEE_WEI = BigInt('1000000000000000');
+const PRODUCTION_DEPLOYMENTS = {
+  AiStocksAssetRegistryV1: '0x9A3d5bFCA8624F8Df27342E6aBCDA33A56C7e6Ca',
+  AiStocksPolicyManagerV1: '0x7501B560C453D63aEAA0Ce565Ec2A50dDE11Cc2e',
+  AiStocksIndexFactoryV1: '0xB3fC19f5c152559086DfF401F4D5c4A221f6b060',
+  AiStocksIndexMintRouterV1: '0xc75f9cbbAf87a70Dd0a3369aa5D548cD5E5859C1',
+  AiStocksIndexRedeemRouterV1: '0x4eb684888A6E5B10b8BC29f2600bf6ae4Bef1fA3',
+} as const;
+
 const REGISTRY_TOKENS = [
   BASE_USDC,
   '0x4200000000000000000000000000000000000006',
@@ -296,6 +306,83 @@ export function Deployer() {
     );
   }
 
+  function productionConstructorFor(contractKey: ContractKey) {
+    const registry = PRODUCTION_DEPLOYMENTS.AiStocksAssetRegistryV1;
+    const policy = PRODUCTION_DEPLOYMENTS.AiStocksPolicyManagerV1;
+    const factory = PRODUCTION_DEPLOYMENTS.AiStocksIndexFactoryV1;
+
+    if (
+      contractKey === 'AiStocksAssetRegistryV1' ||
+      contractKey === 'AiStocksPolicyManagerV1'
+    ) {
+      return encodeAbiParameters(
+        [{ type: 'address', name: 'initialOwner' }],
+        [PRODUCTION_OWNER],
+      );
+    }
+
+    if (contractKey === 'AiStocksIndexFactoryV1') {
+      return encodeAbiParameters(
+        [
+          { type: 'address', name: 'initialOwner' },
+          { type: 'address', name: 'registry_' },
+          { type: 'address', name: 'policyManager_' },
+          { type: 'address', name: 'launchFeeRecipient_' },
+          { type: 'uint256', name: 'launchFeeWei_' },
+        ],
+        [
+          PRODUCTION_OWNER,
+          registry,
+          policy,
+          LAUNCH_FEE_RECIPIENT,
+          PRODUCTION_LAUNCH_FEE_WEI,
+        ],
+      );
+    }
+
+    return encodeAbiParameters(
+      [
+        { type: 'address', name: 'initialOwner' },
+        { type: 'address', name: 'usdc' },
+        { type: 'address', name: 'factory_' },
+        { type: 'address', name: 'policyManager_' },
+        { type: 'address', name: 'feeRecipient' },
+      ],
+      [
+        PRODUCTION_OWNER,
+        BASE_USDC,
+        factory,
+        policy,
+        LAUNCH_FEE_RECIPIENT,
+      ],
+    );
+  }
+
+  async function verifyExisting(contractKey: ContractKey) {
+    const contractAddress = PRODUCTION_DEPLOYMENTS[contractKey];
+    const constructorArguments = productionConstructorFor(contractKey).slice(2);
+    await verifyContract(contractKey, contractAddress, constructorArguments);
+  }
+
+  async function verifyAllExisting() {
+    setError(null);
+    setBusy('verifyAll');
+
+    try {
+      for (const contractKey of CONTRACT_ORDER) {
+        await verifyExisting(contractKey);
+      }
+    } catch (verifyAllError) {
+      setError(
+        verifyAllError instanceof Error
+          ? verifyAllError.message
+          : 'Verification failed.',
+      );
+    } finally {
+      setBusy(null);
+    }
+  }
+
   function canDeploy(contractKey: ContractKey) {
     if (addresses[contractKey]) return false;
     if (contractKey === 'AiStocksAssetRegistryV1') return true;
@@ -533,6 +620,67 @@ export function Deployer() {
                   {busy === contractKey ? 'Deploying…' : 'Deploy'}
                 </button>
               )}
+            </div>
+          );
+        })}
+      </section>
+
+      <section className="card">
+        <h2>Verify deployed contracts</h2>
+        <p className="hint">
+          These are the existing Base production deployments. Verification uses
+          the exact Solidity Standard JSON, Solidity 0.8.30, viaIR, optimizer
+          settings, and constructor arguments used for this deployment. No wallet
+          transaction is required.
+        </p>
+
+        <button
+          className="primary"
+          disabled={busy !== null}
+          onClick={verifyAllExisting}
+        >
+          {busy === 'verifyAll' ? 'Verifying all 5…' : 'Verify all 5 on BaseScan'}
+        </button>
+
+        {CONTRACT_ORDER.map((contractKey) => {
+          const deployed = PRODUCTION_DEPLOYMENTS[contractKey];
+          const state = verification[contractKey];
+          const message = verificationMessage[contractKey];
+
+          return (
+            <div className="deployStep" key={`verify-${contractKey}`}>
+              <div>
+                <b>{CONTRACT_LABELS[contractKey]}</b>
+                <p>{deployed}</p>
+                {message && (
+                  <p className={state === 'verified' ? 'good' : ''}>
+                    {message}
+                  </p>
+                )}
+              </div>
+
+              <div>
+                <a
+                  href={`https://basescan.org/address/${deployed}#code`}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  BaseScan ↗
+                </a>
+                <button
+                  className="secondary"
+                  disabled={busy !== null || state === 'submitting' || state === 'pending'}
+                  onClick={() => verifyExisting(contractKey)}
+                >
+                  {state === 'verified'
+                    ? 'Verified ✓'
+                    : state === 'submitting'
+                      ? 'Submitting…'
+                      : state === 'pending'
+                        ? 'Processing…'
+                        : 'Verify'}
+                </button>
+              </div>
             </div>
           );
         })}
