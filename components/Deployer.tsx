@@ -112,7 +112,7 @@ export function Deployer() {
   const [addresses, setAddresses] = useState<AddressBook>({});
   const [setup, setSetup] = useState<SetupState>({});
   const [launchFeeEth, setLaunchFeeEth] = useState('0.001');
-  const [routerFeeRecipient, setRouterFeeRecipient] = useState(LAUNCH_FEE_RECIPIENT);
+  const [routerFeeRecipient, setRouterFeeRecipient] = useState<string>(LAUNCH_FEE_RECIPIENT);
   const [lifiTarget, setLifiTarget] = useState('');
   const [lifiSpender, setLifiSpender] = useState('');
   const [busy, setBusy] = useState<string | null>(null);
