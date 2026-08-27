@@ -1,10 +1,28 @@
-import fs from 'node:fs';
-import path from 'node:path';
+import fs from 'fs';
+import path from 'path';
 import solc from 'solc';
+import { createRequire } from 'module';
 
-const root = process.cwd();
-const entryUnit = 'contracts/AiStocksIndexLaunchV1.sol';
-const contractNames = [
+const require = createRequire(import.meta.url);
+
+const ROOT = process.cwd();
+
+const CONTRACT_PATH = path.join(
+  ROOT,
+  'contracts',
+  'AiStocksIndexLaunchV1.sol',
+);
+
+const OUTPUT_PATH = path.join(
+  ROOT,
+  'lib',
+  'marketplace.generated.ts',
+);
+
+const SOURCE_KEY =
+  'contracts/AiStocksIndexLaunchV1.sol';
+
+const CONTRACT_NAMES = [
   'AiStocksAssetRegistryV1',
   'AiStocksPolicyManagerV1',
   'AiStocksIndexFactoryV1',
@@ -12,100 +30,263 @@ const contractNames = [
   'AiStocksIndexRedeemRouterV1',
 ];
 
-function fileForUnit(unit) {
-  if (unit.startsWith('@')) return path.join(root, 'node_modules', unit);
-  return path.join(root, unit);
+function readFile(filePath) {
+  return fs.readFileSync(filePath, 'utf8');
 }
 
-function normalizeUnit(parentUnit, imported) {
-  if (imported.startsWith('.')) {
-    return path.posix.normalize(
-      path.posix.join(path.posix.dirname(parentUnit), imported),
+function resolveImport(importPath) {
+  try {
+    if (importPath.startsWith('@')) {
+      return require.resolve(importPath, {
+        paths: [ROOT],
+      });
+    }
+
+    return path.resolve(
+      path.dirname(CONTRACT_PATH),
+      importPath,
+    );
+  } catch {
+    return null;
+  }
+}
+
+function findImports(importPath) {
+  const resolved =
+    resolveImport(importPath);
+
+  if (!resolved) {
+    return {
+      error: `Could not resolve import: ${importPath}`,
+    };
+  }
+
+  try {
+    return {
+      contents: readFile(resolved),
+    };
+  } catch {
+    return {
+      error: `Could not read import: ${importPath}`,
+    };
+  }
+}
+
+function collectSources(
+  sourceKey,
+  sourceContents,
+  collected = {},
+) {
+  if (collected[sourceKey]) {
+    return collected;
+  }
+
+  collected[sourceKey] = {
+    content: sourceContents,
+  };
+
+  const importRegex =
+    /import\s+(?:(?:[^'"]*from\s*)?)["']([^"']+)["'];/g;
+
+  let match;
+
+  while (
+    (match =
+      importRegex.exec(
+        sourceContents,
+      ))
+  ) {
+    const importPath =
+      match[1];
+
+    const resolved =
+      resolveImport(importPath);
+
+    if (!resolved) {
+      throw new Error(
+        `Unable to resolve ${importPath}`,
+      );
+    }
+
+    const importedSource =
+      readFile(resolved);
+
+    collectSources(
+      importPath,
+      importedSource,
+      collected,
     );
   }
-  return imported;
+
+  return collected;
 }
 
-function extractImports(source) {
-  const imports = [];
-  const re = /import\s+(?:(?:[^'\"]*?\s+from\s+)?)[\"']([^\"']+)[\"']\s*;/g;
-  let match;
-  while ((match = re.exec(source)) !== null) imports.push(match[1]);
-  return imports;
-}
+const mainSource =
+  readFile(CONTRACT_PATH);
 
-const sources = {};
-const visiting = new Set();
-
-function addSource(unit) {
-  if (sources[unit] || visiting.has(unit)) return;
-  visiting.add(unit);
-  const file = fileForUnit(unit);
-  if (!fs.existsSync(file)) {
-    throw new Error(`Import not found while building verification input: ${unit}`);
-  }
-  const content = fs.readFileSync(file, 'utf8');
-  sources[unit] = { content };
-  for (const imported of extractImports(content)) {
-    addSource(normalizeUnit(unit, imported));
-  }
-  visiting.delete(unit);
-}
-
-addSource(entryUnit);
+const sources =
+  collectSources(
+    SOURCE_KEY,
+    mainSource,
+  );
 
 const input = {
   language: 'Solidity',
+
   sources,
+
   settings: {
-    optimizer: { enabled: true, runs: 200 },
+    viaIR: true,
+
+    optimizer: {
+      enabled: true,
+      runs: 200,
+    },
+
     outputSelection: {
       '*': {
-        '*': ['abi', 'evm.bytecode.object', 'metadata'],
+        '*': [
+          'abi',
+          'evm.bytecode.object',
+          'evm.deployedBytecode.object',
+        ],
       },
     },
   },
 };
 
-const output = JSON.parse(solc.compile(JSON.stringify(input)));
-const errors = (output.errors ?? []).filter((e) => e.severity === 'error');
-if (errors.length) {
-  console.error(errors.map((e) => e.formattedMessage).join('\n'));
-  process.exit(1);
+const output =
+  JSON.parse(
+    solc.compile(
+      JSON.stringify(input),
+      {
+        import: findImports,
+      },
+    ),
+  );
+
+if (output.errors) {
+  for (const error of output.errors) {
+    console.log(
+      error.formattedMessage,
+    );
+  }
+
+  const fatal =
+    output.errors.filter(
+      (error) =>
+        error.severity ===
+        'error',
+    );
+
+  if (fatal.length) {
+    process.exit(1);
+  }
+}
+
+const compiled =
+  output.contracts?.[
+    SOURCE_KEY
+  ];
+
+if (!compiled) {
+  throw new Error(
+    'No compiled contracts found.',
+  );
 }
 
 const artifacts = {};
-for (const name of contractNames) {
-  const artifact = output.contracts?.[entryUnit]?.[name];
-  if (!artifact) throw new Error(`Missing compiled artifact: ${name}`);
-  const bytecode = `0x${artifact.evm.bytecode.object}`;
-  if (bytecode === '0x') throw new Error(`Compiled bytecode is empty: ${name}`);
-  artifacts[name] = { abi: artifact.abi, bytecode };
+
+for (
+  const contractName of
+  CONTRACT_NAMES
+) {
+  const contract =
+    compiled[contractName];
+
+  if (!contract) {
+    throw new Error(
+      `Missing compiled contract: ${contractName}`,
+    );
+  }
+
+  const bytecodeObject =
+    contract.evm?.bytecode
+      ?.object;
+
+  if (!bytecodeObject) {
+    throw new Error(
+      `Missing bytecode for ${contractName}`,
+    );
+  }
+
+  artifacts[contractName] = {
+    abi: contract.abi,
+
+    bytecode:
+      `0x${bytecodeObject}`,
+  };
 }
 
-const rawCompilerVersion = solc.version();
-const compilerVersion = rawCompilerVersion.replace(/\.Emscripten\.clang$/, '');
-const etherscanCompilerVersion = `v${compilerVersion}`;
-const standardJsonInput = JSON.stringify(input);
+const compilerVersion =
+  solc.version();
 
-const generated = `// AUTO-GENERATED by scripts/compile-contract.mjs. Do not edit.\n` +
-  `export const launchArtifacts = ${JSON.stringify(artifacts, null, 2)} as const;\n` +
-  `export const compilerVersion = ${JSON.stringify(rawCompilerVersion)} as const;\n`;
+const generated =
+`// AUTO-GENERATED FILE.
+// DO NOT EDIT MANUALLY.
+// Generated by scripts/compile-contract.mjs
 
-const verificationGenerated = `// AUTO-GENERATED by scripts/compile-contract.mjs. Server-side only. Do not edit.\n` +
-  `export const launchStandardJsonInput = ${JSON.stringify(standardJsonInput)} as const;\n` +
-  `export const etherscanCompilerVersion = ${JSON.stringify(etherscanCompilerVersion)} as const;\n` +
-  `export const etherscanContractNames = ${JSON.stringify(Object.fromEntries(contractNames.map((name) => [name, `${entryUnit}:${name}`])), null, 2)} as const;\n`;
+export const compilerVersion = ${JSON.stringify(
+  compilerVersion,
+)} as const;
 
-fs.mkdirSync(path.join(root, 'lib'), { recursive: true });
-fs.writeFileSync(path.join(root, 'lib', 'launch.generated.ts'), generated);
-fs.writeFileSync(
-  path.join(root, 'lib', 'launch.verification.generated.ts'),
-  verificationGenerated,
+export const verificationInput = ${JSON.stringify(
+  JSON.stringify(input),
+)} as const;
+
+export const contractArtifacts = ${JSON.stringify(
+  artifacts,
+  null,
+  2,
+)} as const;
+`;
+
+fs.mkdirSync(
+  path.dirname(OUTPUT_PATH),
+  {
+    recursive: true,
+  },
 );
 
-console.log(`Compiled AiStocksIndexLaunchV1 with ${rawCompilerVersion}`);
-for (const name of contractNames) {
-  console.log(`${name}: ${(artifacts[name].bytecode.length - 2) / 2} creation bytes`);
+fs.writeFileSync(
+  OUTPUT_PATH,
+  generated,
+);
+
+console.log(
+  `Compiled AiStocks launch suite with ${compilerVersion}`,
+);
+
+for (
+  const contractName of
+  CONTRACT_NAMES
+) {
+  const bytecode =
+    artifacts[
+      contractName
+    ].bytecode;
+
+  console.log(
+    `${contractName}: ${
+      (bytecode.length - 2) /
+      2
+    } bytes`,
+  );
 }
-console.log(`Verification sources: ${Object.keys(sources).length}`);
+
+console.log(
+  `Verification sources: ${
+    Object.keys(sources)
+      .length
+  }`,
+);
