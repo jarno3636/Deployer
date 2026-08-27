@@ -418,13 +418,13 @@ contract AiStocksIndexVaultV1 is ReentrancyGuardV1 {
 }
 
 contract AiStocksIndexFactoryV1 is OwnedV1 {
-    enum AssetClass { UNKNOWN, CASH, BASE_ASSET, B20_STOCK }
-
     AiStocksAssetRegistryV1 public immutable registry;
     AiStocksPolicyManagerV1 public immutable policyManager;
+
     address public mintRouter;
     address public redeemRouter;
-    address payable public launchFeeRecipient;
+
+    address public launchFeeRecipient;
     uint256 public launchFeeWei;
 
     uint16 public constant MIN_WEIGHT_BPS = 500;
@@ -440,9 +440,8 @@ contract AiStocksIndexFactoryV1 is OwnedV1 {
     address[] public allVaults;
 
     event RoutersSet(address indexed mintRouter, address indexed redeemRouter);
-    event LaunchFeeUpdated(uint256 previousFeeWei, uint256 newFeeWei);
-    event LaunchFeeRecipientUpdated(address indexed previousRecipient, address indexed newRecipient);
-    event LaunchFeePaid(address indexed creator, address indexed recipient, uint256 amount);
+    event LaunchFeeSet(uint256 launchFeeWei);
+    event LaunchFeeRecipientSet(address indexed launchFeeRecipient);
     event IndexLaunched(
         address indexed creator,
         address indexed vault,
@@ -459,18 +458,20 @@ contract AiStocksIndexFactoryV1 is OwnedV1 {
     error InvalidToken(address token);
     error MintRouterNotSet();
     error InvalidLaunchFee();
-    error IncorrectLaunchFee(uint256 required, uint256 supplied);
+    error InvalidLaunchFeeRecipient();
     error LaunchFeeTransferFailed();
 
     constructor(
         address initialOwner,
         address registry_,
         address policyManager_,
-        address payable launchFeeRecipient_,
+        address launchFeeRecipient_,
         uint256 launchFeeWei_
     ) OwnedV1(initialOwner) {
-        if (launchFeeRecipient_ == address(0)) revert ZeroAddress();
+        if (registry_ == address(0) || policyManager_ == address(0)) revert ZeroAddress();
+        if (launchFeeRecipient_ == address(0)) revert InvalidLaunchFeeRecipient();
         if (launchFeeWei_ == 0) revert InvalidLaunchFee();
+
         registry = AiStocksAssetRegistryV1(registry_);
         policyManager = AiStocksPolicyManagerV1(policyManager_);
         launchFeeRecipient = launchFeeRecipient_;
@@ -486,93 +487,238 @@ contract AiStocksIndexFactoryV1 is OwnedV1 {
 
     function setLaunchFee(uint256 newFeeWei) external onlyOwner {
         if (newFeeWei == 0) revert InvalidLaunchFee();
-        uint256 previous = launchFeeWei;
         launchFeeWei = newFeeWei;
-        emit LaunchFeeUpdated(previous, newFeeWei);
+        emit LaunchFeeSet(newFeeWei);
     }
 
-    function setLaunchFeeRecipient(address payable newRecipient) external onlyOwner {
-        if (newRecipient == address(0)) revert ZeroAddress();
-        address previous = launchFeeRecipient;
+    function setLaunchFeeRecipient(address newRecipient) external onlyOwner {
+        if (newRecipient == address(0)) revert InvalidLaunchFeeRecipient();
         launchFeeRecipient = newRecipient;
-        emit LaunchFeeRecipientUpdated(previous, newRecipient);
+        emit LaunchFeeRecipientSet(newRecipient);
     }
 
-    function vaultCount() external view returns (uint256) { return allVaults.length; }
+    function vaultCount() external view returns (uint256) {
+        return allVaults.length;
+    }
 
-    function launchIndex(string calldata name, string calldata symbol, address[] calldata assets_, uint16[] calldata weights_)
-        external payable returns (address vaultAddress, address tokenAddress)
-    {
-        uint256 requiredFee = launchFeeWei;
-        if (msg.value != requiredFee) revert IncorrectLaunchFee(requiredFee, msg.value);
+    function launchIndex(
+        string calldata name,
+        string calldata symbol,
+        address[] calldata assets_,
+        uint16[] calldata weights_
+    ) external payable returns (address vaultAddress, address tokenAddress) {
         address router = mintRouter;
         address redeem = redeemRouter;
+
         if (router == address(0) || redeem == address(0)) revert MintRouterNotSet();
+        if (msg.value != launchFeeWei) revert InvalidLaunchFee();
+
+        _validateNameAndSymbol(name, symbol);
+        bool stock = _validateComposition(assets_, weights_);
+
+        (vaultAddress, tokenAddress) = _deployIndex(
+            msg.sender,
+            name,
+            symbol,
+            assets_,
+            weights_,
+            stock,
+            router,
+            redeem
+        );
+
+        _recordIndex(vaultAddress, msg.sender, stock);
+        _forwardLaunchFee();
+
+        emit IndexLaunched(
+            msg.sender,
+            vaultAddress,
+            tokenAddress,
+            name,
+            symbol,
+            stock,
+            assets_,
+            weights_
+        );
+    }
+
+    function _validateNameAndSymbol(
+        string calldata name,
+        string calldata symbol
+    ) private pure {
+        uint256 nameLength = bytes(name).length;
+        uint256 symbolLength = bytes(symbol).length;
+
+        if (
+            nameLength < 3 ||
+            nameLength > 64 ||
+            symbolLength < 2 ||
+            symbolLength > 12
+        ) revert InvalidComposition();
+    }
+
+    function _validateComposition(
+        address[] calldata assets_,
+        uint16[] calldata weights_
+    ) private view returns (bool stock) {
         uint256 n = assets_.length;
-        if (n < MIN_ASSETS || n > MAX_ASSETS || weights_.length != n) revert InvalidComposition();
-        if (bytes(name).length < 3 || bytes(name).length > 64 || bytes(symbol).length < 2 || bytes(symbol).length > 12) revert InvalidComposition();
+
+        if (
+            n < MIN_ASSETS ||
+            n > MAX_ASSETS ||
+            weights_.length != n
+        ) revert InvalidComposition();
 
         uint256 totalWeight;
         uint256 customCount;
-        bool stock;
 
         for (uint256 i; i < n; ++i) {
             address token = assets_[i];
-            if (token == address(0)) revert InvalidToken(token);
-            for (uint256 j; j < i; ++j) if (assets_[j] == token) revert InvalidComposition();
-
-            (AiStocksAssetRegistryV1.AssetClass cls, , bool blocked, uint16 registryCap) = registry.assets(token);
-            if (blocked) revert BlockedAsset(token);
             uint16 weight = weights_[i];
-            if (weight < MIN_WEIGHT_BPS || weight > MAX_WEIGHT_BPS) revert InvalidComposition();
-            if (registryCap != 0 && weight > registryCap) revert InvalidComposition();
 
-            if (cls == AiStocksAssetRegistryV1.AssetClass.UNKNOWN) {
-                ++customCount;
-                if (weight > MAX_CUSTOM_WEIGHT_BPS) revert InvalidComposition();
+            if (token == address(0)) revert InvalidToken(token);
+            _requireUniqueAsset(assets_, i, token);
+
+            (
+                AiStocksAssetRegistryV1.AssetClass assetClass,
+                ,
+                bool blocked,
+                uint16 registryCap
+            ) = registry.assets(token);
+
+            if (blocked) revert BlockedAsset(token);
+
+            if (
+                weight < MIN_WEIGHT_BPS ||
+                weight > MAX_WEIGHT_BPS
+            ) revert InvalidComposition();
+
+            if (
+                registryCap != 0 &&
+                weight > registryCap
+            ) revert InvalidComposition();
+
+            if (assetClass == AiStocksAssetRegistryV1.AssetClass.UNKNOWN) {
+                customCount += 1;
+
+                if (weight > MAX_CUSTOM_WEIGHT_BPS) {
+                    revert InvalidComposition();
+                }
+
                 _validateErc20(token);
-                // Unknown tokens that expose the B20 uiMultiplier interface are
-                // conservatively treated as stock-like so a newly issued stock
-                // cannot bypass the stock policy before the registry is updated.
-                if (_looksLikeB20(token)) stock = true;
+
+                // Unknown tokens exposing the B20 uiMultiplier interface are
+                // conservatively treated as stock-like until registry review.
+                if (_looksLikeB20(token)) {
+                    stock = true;
+                }
+            } else if (
+                assetClass == AiStocksAssetRegistryV1.AssetClass.B20_STOCK
+            ) {
+                stock = true;
             }
-            if (cls == AiStocksAssetRegistryV1.AssetClass.B20_STOCK) stock = true;
+
             totalWeight += weight;
         }
-        if (totalWeight != 10_000 || customCount > MAX_CUSTOM_ASSETS) revert InvalidComposition();
 
-        AiStocksIndexTokenV1 tokenContract = new AiStocksIndexTokenV1(name, symbol, address(this), address(policyManager), stock);
-        AiStocksIndexVaultV1 vault = new AiStocksIndexVaultV1(
-            address(this), address(tokenContract), msg.sender, address(policyManager), assets_, weights_, stock
+        if (
+            totalWeight != 10_000 ||
+            customCount > MAX_CUSTOM_ASSETS
+        ) revert InvalidComposition();
+    }
+
+    function _requireUniqueAsset(
+        address[] calldata assets_,
+        uint256 currentIndex,
+        address token
+    ) private pure {
+        for (uint256 j; j < currentIndex; ++j) {
+            if (assets_[j] == token) {
+                revert InvalidComposition();
+            }
+        }
+    }
+
+    function _deployIndex(
+        address creator,
+        string calldata name,
+        string calldata symbol,
+        address[] calldata assets_,
+        uint16[] calldata weights_,
+        bool stock,
+        address router,
+        address redeem
+    ) private returns (address vaultAddress, address tokenAddress) {
+        AiStocksIndexTokenV1 tokenContract = new AiStocksIndexTokenV1(
+            name,
+            symbol,
+            address(this),
+            address(policyManager),
+            stock
         );
+
+        AiStocksIndexVaultV1 vault = new AiStocksIndexVaultV1(
+            address(this),
+            address(tokenContract),
+            creator,
+            address(policyManager),
+            assets_,
+            weights_,
+            stock
+        );
+
         tokenContract.finalizeController(address(vault));
         vault.finalizeRouters(router, redeem);
 
         vaultAddress = address(vault);
         tokenAddress = address(tokenContract);
+    }
+
+    function _recordIndex(
+        address vaultAddress,
+        address creator,
+        bool stock
+    ) private {
         isIndexVault[vaultAddress] = true;
-        creatorOf[vaultAddress] = msg.sender;
+        creatorOf[vaultAddress] = creator;
         hasStock[vaultAddress] = stock;
         allVaults.push(vaultAddress);
+    }
 
-        address payable recipient = launchFeeRecipient;
-        (bool feeSent, ) = recipient.call{value: requiredFee}("");
-        if (!feeSent) revert LaunchFeeTransferFailed();
-        emit LaunchFeePaid(msg.sender, recipient, requiredFee);
-        emit IndexLaunched(msg.sender, vaultAddress, tokenAddress, name, symbol, stock, assets_, weights_);
+    function _forwardLaunchFee() private {
+        (bool success, ) = payable(launchFeeRecipient).call{value: msg.value}("");
+        if (!success) revert LaunchFeeTransferFailed();
     }
 
     function _looksLikeB20(address token) private view returns (bool) {
-        (bool ok, bytes memory data) = token.staticcall(abi.encodeWithSignature("uiMultiplier()"));
-        return ok && data.length >= 32 && abi.decode(data, (uint256)) > 0;
+        (bool ok, bytes memory data) =
+            token.staticcall(abi.encodeWithSignature("uiMultiplier()"));
+
+        return (
+            ok &&
+            data.length >= 32 &&
+            abi.decode(data, (uint256)) > 0
+        );
     }
 
     function _validateErc20(address token) private view {
         if (token.code.length == 0) revert InvalidToken(token);
-        (bool ok1, bytes memory d1) = token.staticcall(abi.encodeWithSignature("decimals()"));
-        (bool ok2, bytes memory d2) = token.staticcall(abi.encodeWithSignature("symbol()"));
-        if (!ok1 || d1.length < 32 || !ok2 || d2.length == 0) revert InvalidToken(token);
+
+        (bool ok1, bytes memory d1) =
+            token.staticcall(abi.encodeWithSignature("decimals()"));
+
+        (bool ok2, bytes memory d2) =
+            token.staticcall(abi.encodeWithSignature("symbol()"));
+
+        if (
+            !ok1 ||
+            d1.length < 32 ||
+            !ok2 ||
+            d2.length == 0
+        ) revert InvalidToken(token);
+
         uint256 dec = abi.decode(d1, (uint256));
+
         if (dec > 18) revert InvalidToken(token);
     }
 }
