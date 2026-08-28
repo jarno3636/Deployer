@@ -27,6 +27,7 @@ const BASE_USDC = '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' as const;
 const LAUNCH_FEE_RECIPIENT = '0x5f9c24e66b74404bef89c1ef7222e1771a72fab9' as const;
 
 const PRODUCTION_OWNER = '0x25BE27a17580F59206061B8823E3c0FbC1F7c52E' as const;
+const ELIGIBILITY_PROVIDER_KEY = 'AiStocksStockEligibilityOptInV1' as const;
 const PRODUCTION_LAUNCH_FEE_WEI = BigInt('1000000000000000');
 const PRODUCTION_DEPLOYMENTS = {
   AiStocksAssetRegistryV1: '0x9A3d5bFCA8624F8Df27342E6aBCDA33A56C7e6Ca',
@@ -51,24 +52,27 @@ const REGISTRY_VERIFIED = [true, true, true, true, true, true, true] as const;
 const REGISTRY_BLOCKED = [false, false, false, false, false, false, false] as const;
 const REGISTRY_MAX_WEIGHTS = [6000, 6000, 6000, 6000, 6000, 6000, 6000] as const;
 
-type ContractKey =
+type CoreContractKey =
   | 'AiStocksAssetRegistryV1'
   | 'AiStocksPolicyManagerV1'
   | 'AiStocksIndexFactoryV1'
   | 'AiStocksIndexMintRouterV1'
   | 'AiStocksIndexRedeemRouterV1';
 
-type AddressBook = Partial<Record<ContractKey, `0x${string}`>>;
+type ContractKey = CoreContractKey | typeof ELIGIBILITY_PROVIDER_KEY;
+
+type AddressBook = Partial<Record<CoreContractKey, `0x${string}`>>;
 type SetupState = {
   routersSet?: boolean;
   lifiAllowed?: boolean;
   registrySeeded?: boolean;
   redeemSystemAddress?: boolean;
+  eligibilityProviderConnected?: boolean;
 };
 
 type VerificationState = 'idle' | 'submitting' | 'pending' | 'verified' | 'failed';
 
-const CONTRACT_ORDER: ContractKey[] = [
+const CONTRACT_ORDER: CoreContractKey[] = [
   'AiStocksAssetRegistryV1',
   'AiStocksPolicyManagerV1',
   'AiStocksIndexFactoryV1',
@@ -76,7 +80,7 @@ const CONTRACT_ORDER: ContractKey[] = [
   'AiStocksIndexRedeemRouterV1',
 ];
 
-const CONTRACT_LABELS: Record<ContractKey, string> = {
+const CONTRACT_LABELS: Record<CoreContractKey, string> = {
   AiStocksAssetRegistryV1: '1. Asset Registry',
   AiStocksPolicyManagerV1: '2. Policy Manager',
   AiStocksIndexFactoryV1: '3. Index Factory',
@@ -120,6 +124,7 @@ export function Deployer() {
   const publicClient = usePublicClient({ chainId: base.id });
 
   const [addresses, setAddresses] = useState<AddressBook>({});
+  const [eligibilityProvider, setEligibilityProvider] = useState<`0x${string}` | null>(null);
   const [setup, setSetup] = useState<SetupState>({});
   const [launchFeeEth, setLaunchFeeEth] = useState('0.001');
   const [routerFeeRecipient, setRouterFeeRecipient] = useState<string>(LAUNCH_FEE_RECIPIENT);
@@ -143,9 +148,10 @@ export function Deployer() {
     try {
       const raw = localStorage.getItem(storageKey(address));
       if (!raw) return;
-      const parsed = JSON.parse(raw) as { addresses?: AddressBook; setup?: SetupState };
+      const parsed = JSON.parse(raw) as { addresses?: AddressBook; setup?: SetupState; eligibilityProvider?: `0x${string}` | null };
       setAddresses(parsed.addresses ?? {});
       setSetup(parsed.setup ?? {});
+      setEligibilityProvider(parsed.eligibilityProvider ?? null);
     } catch {
       // Ignore stale local storage.
     }
@@ -153,8 +159,13 @@ export function Deployer() {
 
   useEffect(() => {
     if (!address) return;
-    localStorage.setItem(storageKey(address), JSON.stringify({ addresses, setup }));
-  }, [address, addresses, setup]);
+    localStorage.setItem(storageKey(address), JSON.stringify({ addresses, setup, eligibilityProvider }));
+  }, [address, addresses, setup, eligibilityProvider]);
+
+  useEffect(() => {
+    if (!eligibilityProvider || !publicClient) return;
+    void refreshEligibilityProviderStatus(eligibilityProvider);
+  }, [eligibilityProvider, publicClient]);
 
   async function ensureBase() {
     if (chainId !== base.id) await switchChainAsync({ chainId: base.id });
@@ -260,7 +271,7 @@ export function Deployer() {
     }
   }
 
-  function constructorFor(contractKey: ContractKey) {
+  function constructorFor(contractKey: CoreContractKey) {
     if (!address) throw new Error('Connect MetaMask first.');
     const registry = addresses.AiStocksAssetRegistryV1;
     const policy = addresses.AiStocksPolicyManagerV1;
@@ -306,7 +317,7 @@ export function Deployer() {
     );
   }
 
-  function productionConstructorFor(contractKey: ContractKey) {
+  function productionConstructorFor(contractKey: CoreContractKey) {
     const registry = PRODUCTION_DEPLOYMENTS.AiStocksAssetRegistryV1;
     const policy = PRODUCTION_DEPLOYMENTS.AiStocksPolicyManagerV1;
     const factory = PRODUCTION_DEPLOYMENTS.AiStocksIndexFactoryV1;
@@ -358,7 +369,7 @@ export function Deployer() {
     );
   }
 
-  async function verifyExisting(contractKey: ContractKey) {
+  async function verifyExisting(contractKey: CoreContractKey) {
     const contractAddress = PRODUCTION_DEPLOYMENTS[contractKey];
     const constructorArguments = productionConstructorFor(contractKey).slice(2);
     await verifyContract(contractKey, contractAddress, constructorArguments);
@@ -383,7 +394,7 @@ export function Deployer() {
     }
   }
 
-  function canDeploy(contractKey: ContractKey) {
+  function canDeploy(contractKey: CoreContractKey) {
     if (addresses[contractKey]) return false;
     if (contractKey === 'AiStocksAssetRegistryV1') return true;
     if (contractKey === 'AiStocksPolicyManagerV1') return Boolean(addresses.AiStocksAssetRegistryV1);
@@ -394,7 +405,7 @@ export function Deployer() {
     return Boolean(addresses.AiStocksIndexMintRouterV1 && addresses.AiStocksIndexFactoryV1);
   }
 
-  async function deployContract(contractKey: ContractKey) {
+  async function deployContract(contractKey: CoreContractKey) {
     setError(null);
     setBusy(contractKey);
 
@@ -531,9 +542,94 @@ export function Deployer() {
     await callSetup('systemAddress', policy, data, () => setSetup((s) => ({ ...s, redeemSystemAddress: true })));
   }
 
+  async function refreshEligibilityProviderStatus(providerAddress = eligibilityProvider) {
+    if (!publicClient) return;
+    try {
+      const current = await publicClient.readContract({
+        address: PRODUCTION_DEPLOYMENTS.AiStocksPolicyManagerV1,
+        abi: launchArtifacts.AiStocksPolicyManagerV1.abi,
+        functionName: 'eligibilityProvider',
+      });
+      const connected = Boolean(
+        providerAddress &&
+        typeof current === 'string' &&
+        current.toLowerCase() === providerAddress.toLowerCase(),
+      );
+      setSetup((state) => ({ ...state, eligibilityProviderConnected: connected }));
+    } catch {
+      // A temporary RPC failure should not erase saved deployment state.
+    }
+  }
+
+  async function deployEligibilityProvider() {
+    setError(null);
+    setBusy('eligibilityProviderDeploy');
+
+    try {
+      if (!address || !walletClient || !publicClient) throw new Error('Connect MetaMask first.');
+      const artifact = launchArtifacts.AiStocksStockEligibilityOptInV1;
+      const deploymentData = artifact.bytecode as `0x${string}`;
+
+      await ensureBase();
+      const nonce = await publicClient.getTransactionCount({ address, blockTag: 'pending' });
+      const predictedAddress = getContractAddress({ from: address, nonce: BigInt(nonce) });
+
+      try {
+        const { receipt } = await estimateAndSend({ data: deploymentData });
+        const deployedAddress = receipt.contractAddress ?? predictedAddress;
+        if (!receipt.contractAddress) {
+          const hasCode = await waitForCodeAtAddress(publicClient, predictedAddress, 4, 1000);
+          if (!hasCode) throw new Error('Deployment confirmed but no provider contract code was found.');
+        }
+        setEligibilityProvider(deployedAddress);
+        setSetup((state) => ({ ...state, eligibilityProviderConnected: false }));
+        void verifyContract(ELIGIBILITY_PROVIDER_KEY, deployedAddress, '');
+      } catch (sendError) {
+        const landed = await waitForCodeAtAddress(publicClient, predictedAddress, 6, 1500);
+        if (!landed) throw sendError;
+        setEligibilityProvider(predictedAddress);
+        setSetup((state) => ({ ...state, eligibilityProviderConnected: false }));
+        void verifyContract(ELIGIBILITY_PROVIDER_KEY, predictedAddress, '');
+      }
+    } catch (deployError) {
+      setError(deployError instanceof Error ? deployError.message : 'Eligibility provider deployment failed.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function verifyEligibilityProvider() {
+    if (!eligibilityProvider) return;
+    await verifyContract(ELIGIBILITY_PROVIDER_KEY, eligibilityProvider, '');
+  }
+
+  async function connectEligibilityProvider() {
+    if (!eligibilityProvider) return;
+    if (!address || address.toLowerCase() !== PRODUCTION_OWNER.toLowerCase()) {
+      setError(`Connect the AiStocks owner wallet ${PRODUCTION_OWNER} to change the Policy Manager.`);
+      return;
+    }
+
+    const data = encodeFunctionData({
+      abi: launchArtifacts.AiStocksPolicyManagerV1.abi,
+      functionName: 'setEligibilityProvider',
+      args: [eligibilityProvider],
+    });
+
+    await callSetup(
+      'connectEligibilityProvider',
+      PRODUCTION_DEPLOYMENTS.AiStocksPolicyManagerV1,
+      data,
+      () => setSetup((state) => ({ ...state, eligibilityProviderConnected: true })),
+    );
+
+    await refreshEligibilityProviderStatus(eligibilityProvider);
+  }
+
   function clearSavedDeployment() {
     if (address) localStorage.removeItem(storageKey(address));
     setAddresses({});
+    setEligibilityProvider(null);
     setSetup({});
     setLastHash(null);
     setVerification({});
@@ -721,6 +817,77 @@ export function Deployer() {
             {setup.redeemSystemAddress ? 'Done ✓' : busy === 'systemAddress' ? 'Confirming…' : 'Set system address'}
           </button>
         </div>
+      </section>
+
+
+      <section className="card">
+        <h2>Stock index eligibility provider</h2>
+        <p className="hint">
+          This is the one missing piece for the new self-service “Enable stock indexes” button.
+          It does not replace any of the five production contracts above.
+        </p>
+
+        <div className="deployStep">
+          <div>
+            <b>1. Deploy eligibility provider</b>
+            <p>{eligibilityProvider ? `Deployed: ${short(eligibilityProvider)}` : 'Not deployed yet.'}</p>
+            {verificationMessage[ELIGIBILITY_PROVIDER_KEY] && (
+              <p className={verification[ELIGIBILITY_PROVIDER_KEY] === 'verified' ? 'good' : ''}>
+                {verificationMessage[ELIGIBILITY_PROVIDER_KEY]}
+              </p>
+            )}
+          </div>
+          {eligibilityProvider ? (
+            <a href={`https://basescan.org/address/${eligibilityProvider}#code`} target="_blank" rel="noreferrer">BaseScan ↗</a>
+          ) : (
+            <button
+              className="primary"
+              disabled={!isConnected || !onBase || busy !== null}
+              onClick={deployEligibilityProvider}
+            >
+              {busy === 'eligibilityProviderDeploy' ? 'Deploying…' : 'Deploy provider'}
+            </button>
+          )}
+        </div>
+
+        {eligibilityProvider && verification[ELIGIBILITY_PROVIDER_KEY] !== 'verified' && (
+          <button
+            className="secondary"
+            disabled={busy !== null || verification[ELIGIBILITY_PROVIDER_KEY] === 'submitting' || verification[ELIGIBILITY_PROVIDER_KEY] === 'pending'}
+            onClick={verifyEligibilityProvider}
+          >
+            {verification[ELIGIBILITY_PROVIDER_KEY] === 'pending' ? 'Verification processing…' : 'Verify provider on BaseScan'}
+          </button>
+        )}
+
+        <div className="deployStep">
+          <div>
+            <b>2. Connect provider to production Policy Manager</b>
+            <p>Writes setEligibilityProvider(provider) to {short(PRODUCTION_DEPLOYMENTS.AiStocksPolicyManagerV1)}.</p>
+            <p className={setup.eligibilityProviderConnected ? 'good' : ''}>
+              {setup.eligibilityProviderConnected
+                ? 'Connected onchain ✓'
+                : verification[ELIGIBILITY_PROVIDER_KEY] === 'verified'
+                  ? 'Provider verified. Ready to connect.'
+                  : 'Deploy and verify the provider first.'}
+            </p>
+          </div>
+          <button
+            className="primary"
+            disabled={!eligibilityProvider || verification[ELIGIBILITY_PROVIDER_KEY] !== 'verified' || !isConnected || !onBase || Boolean(setup.eligibilityProviderConnected) || busy !== null}
+            onClick={connectEligibilityProvider}
+          >
+            {setup.eligibilityProviderConnected
+              ? 'Connected ✓'
+              : busy === 'connectEligibilityProvider'
+                ? 'Confirming…'
+                : 'Connect to Policy Manager'}
+          </button>
+        </div>
+
+        <p className="hint">
+          Use the AiStocks owner wallet for step 2. After it confirms, the app can let each user opt in from their own wallet.
+        </p>
       </section>
 
       {lastHash && (
