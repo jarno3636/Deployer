@@ -11,6 +11,7 @@ import {
 } from 'wagmi';
 import { base } from 'wagmi/chains';
 import {
+  decodeAbiParameters,
   encodeAbiParameters,
   encodeFunctionData,
   getContractAddress,
@@ -545,15 +546,30 @@ export function Deployer() {
   async function refreshEligibilityProviderStatus(providerAddress = eligibilityProvider) {
     if (!publicClient) return;
     try {
-      const current = await publicClient.readContract({
-        address: PRODUCTION_DEPLOYMENTS.AiStocksPolicyManagerV1,
+      // Use a raw eth_call here instead of readContract. With the viem/wagmi
+      // versions used by this deployer, the generated EIP-7702 overload can
+      // incorrectly require `authorizationList` at TypeScript build time.
+      // This is the same read-only onchain call without that type-level issue.
+      const callData = encodeFunctionData({
         abi: launchArtifacts.AiStocksPolicyManagerV1.abi,
         functionName: 'eligibilityProvider',
       });
+      const raw = await publicClient.request({
+        method: 'eth_call',
+        params: [
+          {
+            to: PRODUCTION_DEPLOYMENTS.AiStocksPolicyManagerV1,
+            data: callData,
+          },
+          'latest',
+        ],
+      });
+      const current = decodeAbiParameters(
+        [{ type: 'address' }],
+        raw as `0x${string}`,
+      )[0];
       const connected = Boolean(
-        providerAddress &&
-        typeof current === 'string' &&
-        current.toLowerCase() === providerAddress.toLowerCase(),
+        providerAddress && current.toLowerCase() === providerAddress.toLowerCase(),
       );
       setSetup((state) => ({ ...state, eligibilityProviderConnected: connected }));
     } catch {
