@@ -4,16 +4,21 @@ import solc from 'solc';
 
 const root = process.cwd();
 
-const entryUnit =
-  'contracts/AiStocksIndexLaunchV1.sol';
-
-const contractNames = [
-  'AiStocksAssetRegistryV1',
-  'AiStocksPolicyManagerV1',
-  'AiStocksIndexFactoryV1',
-  'AiStocksIndexMintRouterV1',
-  'AiStocksIndexRedeemRouterV1',
+const entryUnits = [
+  'contracts/AiStocksIndexLaunchV1.sol',
+  'contracts/AiStocksStockEligibilityOptInV1.sol',
 ];
+
+const contractSources = {
+  AiStocksAssetRegistryV1: 'contracts/AiStocksIndexLaunchV1.sol',
+  AiStocksPolicyManagerV1: 'contracts/AiStocksIndexLaunchV1.sol',
+  AiStocksIndexFactoryV1: 'contracts/AiStocksIndexLaunchV1.sol',
+  AiStocksIndexMintRouterV1: 'contracts/AiStocksIndexLaunchV1.sol',
+  AiStocksIndexRedeemRouterV1: 'contracts/AiStocksIndexLaunchV1.sol',
+  AiStocksStockEligibilityOptInV1: 'contracts/AiStocksStockEligibilityOptInV1.sol',
+};
+
+const contractNames = Object.keys(contractSources);
 
 function fileForUnit(unit) {
   if (unit.startsWith('@')) {
@@ -115,7 +120,9 @@ function addSource(unit) {
   visiting.delete(unit);
 }
 
-addSource(entryUnit);
+for (const entryUnit of entryUnits) {
+  addSource(entryUnit);
+}
 
 /*
  * IMPORTANT:
@@ -192,10 +199,9 @@ for (
   const name of
   contractNames
 ) {
+  const unit = contractSources[name];
   const artifact =
-    output.contracts?.[
-      entryUnit
-    ]?.[name];
+    output.contracts?.[unit]?.[name];
 
   if (!artifact) {
     throw new Error(
@@ -259,7 +265,7 @@ const etherscanNames =
     contractNames.map(
       (name) => [
         name,
-        `${entryUnit}:${name}`,
+        `${contractSources[name]}:${name}`,
       ],
     ),
   );
@@ -307,7 +313,7 @@ fs.writeFileSync(
 );
 
 console.log(
-  `Compiled AiStocksIndexLaunchV1 with ${rawCompilerVersion}`,
+  `Compiled AiStocks deployer contracts with ${rawCompilerVersion}`,
 );
 
 for (
