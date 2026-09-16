@@ -3,8 +3,8 @@ import './globals.css';
 import { Providers } from './providers';
 
 export const metadata: Metadata = {
-  title: 'ScanArc Router Deployer',
-  description: 'Guarded Arc mainnet deployment console for ScanArcRouter.',
+  title: 'ScanArc Router V3 Deployer',
+  description: 'Guarded Arc mainnet deployment console for the ScanArc lifecycle router.',
 };
 
 export const viewport: Viewport = {
