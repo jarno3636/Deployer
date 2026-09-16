@@ -3,8 +3,8 @@ import './globals.css';
 import { Providers } from './providers';
 
 export const metadata: Metadata = {
-  title: 'Tobyworld Contract Deployer',
-  description: 'Mobile-first Base contract deployer for TobyworldMarketplaceV1.',
+  title: 'ScanArc Router Deployer',
+  description: 'Guarded Arc mainnet deployment console for ScanArcRouter.',
 };
 
 export const viewport: Viewport = {
