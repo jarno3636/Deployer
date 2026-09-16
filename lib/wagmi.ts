@@ -1,18 +1,12 @@
 import { createConfig, http } from 'wagmi';
-import { base } from 'wagmi/chains';
-import { coinbaseWallet, injected } from 'wagmi/connectors';
+import { injected } from 'wagmi/connectors';
+import { arc } from './arc';
 
 export const config = createConfig({
-  chains: [base],
-  connectors: [
-    coinbaseWallet({
-      appName: 'Tobyworld Deployer',
-      preference: { options: 'eoaOnly' },
-    }),
-    injected({ shimDisconnect: true }),
-  ],
+  chains: [arc],
+  connectors: [injected({ shimDisconnect: true })],
   transports: {
-    [base.id]: http('https://mainnet.base.org'),
+    [arc.id]: http('https://rpc.mainnet.arc.io'),
   },
   ssr: true,
 });
