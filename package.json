@@ -1,25 +1,25 @@
 {
   "name": "scanarc-router-deployer",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
-  "type": "module",
   "scripts": {
-    "dev": "vite",
-    "build": "tsc -b && vite build",
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
     "check:artifacts": "node scripts/check-artifacts.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
+    "next": "16.2.10",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "viem": "^2.38.0",
     "wagmi": "^2.18.2"
   },
   "devDependencies": {
+    "@types/node": "^24.7.2",
     "@types/react": "^19.1.16",
     "@types/react-dom": "^19.1.9",
-    "@vitejs/plugin-react": "^5.0.4",
-    "typescript": "^5.9.3",
-    "vite": "^7.1.9"
+    "typescript": "^5.9.3"
   }
 }
