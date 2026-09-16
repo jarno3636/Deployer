@@ -1,12 +1,14 @@
 {
   "name": "scanarc-router-deployer",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "check:artifacts": "node scripts/check-artifacts.mjs"
+    "check:artifacts": "node scripts/check-artifacts.mjs",
+    "prebuild": "npm run compile:scanarc",
+    "compile:scanarc": "node scripts/compile-scanarc-router.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
@@ -14,7 +16,8 @@
     "react": "^19.1.1",
     "react-dom": "^19.1.1",
     "viem": "^2.38.0",
-    "wagmi": "^2.18.2"
+    "wagmi": "^2.18.2",
+    "solc": "0.8.30"
   },
   "devDependencies": {
     "@types/node": "^24.7.2",
