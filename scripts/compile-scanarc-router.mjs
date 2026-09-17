@@ -30,3 +30,12 @@ fs.writeFileSync(path.join(root, 'artifacts', 'ScanArcUniversalRouterV1.bin'), a
 fs.writeFileSync(path.join(root, 'artifacts', 'ScanArcUniversalRouterV1.standard-input.json'), JSON.stringify(input, null, 2));
 fs.writeFileSync(path.join(root, 'lib', 'scanarc-router-verification.generated.ts'), `// AUTO-GENERATED. Do not edit.\nexport const standardJsonInput = ${JSON.stringify(JSON.stringify(input))} as const;\n`);
 console.log(`${name}: ${artifact.evm.bytecode.object.length / 2} creation bytes; ${solc.version()}`);
+
+// Bridge artifacts are required by the deployer UI and verification route.
+// Compile them here as part of compile:scanarc so clean Vercel builds remain
+// deterministic even when prebuild only invokes `npm run compile:scanarc`.
+const bridgeCompiler = path.join(root, 'scripts', 'compile-scanarc-bridge.mjs');
+if (fs.existsSync(bridgeCompiler)) {
+  const { execFileSync } = await import('node:child_process');
+  execFileSync(process.execPath, [bridgeCompiler], { cwd: root, stdio: 'inherit' });
+}
