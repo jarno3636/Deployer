@@ -10,6 +10,7 @@ const input = {
   language: 'Solidity',
   sources: { [unit]: { content: source } },
   settings: {
+    viaIR: true,
     optimizer: { enabled: true, runs: 200 },
     outputSelection: { '*': { '*': ['abi', 'evm.bytecode.object', 'metadata'] } },
   },
