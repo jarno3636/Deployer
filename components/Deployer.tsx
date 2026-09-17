@@ -37,8 +37,8 @@ export function Deployer() {
   const [contractAddress, setContractAddress] = useState<`0x${string}` | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [sourceVerified, setSourceVerified] = useState(false);
-  const [testToken, setTestToken] = useState(KNOWN_TOKEN);
-  const [testCurve, setTestCurve] = useState(KNOWN_CURVE);
+  const [testToken, setTestToken] = useState<string>(KNOWN_TOKEN);
+  const [testCurve, setTestCurve] = useState<string>(KNOWN_CURVE);
   const [testingPair, setTestingPair] = useState(false);
   const [pairResult, setPairResult] = useState<boolean | null>(null);
   const [infraOk, setInfraOk] = useState<boolean | null>(null);
