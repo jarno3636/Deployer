@@ -8,7 +8,8 @@
     "start": "next start",
     "check:artifacts": "node scripts/check-artifacts.mjs",
     "prebuild": "npm run compile:scanarc",
-    "compile:scanarc": "node scripts/compile-scanarc-router.mjs"
+    "compile:scanarc": "node scripts/compile-scanarc-router.mjs",
+    "compile:bridge": "node scripts/compile-scanarc-bridge.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
