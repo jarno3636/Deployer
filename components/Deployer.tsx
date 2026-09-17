@@ -5,6 +5,8 @@ import { encodeAbiParameters, encodeDeployData, getAddress, getContractAddress, 
 import { useAccount, useConnect, useDisconnect, usePublicClient, useSwitchChain, useWalletClient } from "wagmi";
 import { arc, ARC_RPC_URLS } from "../lib/arc";
 import { routerAbi, routerBytecode, compilerVersion } from "../lib/scanarc-router.generated";
+import { bridgeRegistryAbi, bridgeRegistryBytecode, bridgeCompilerVersion } from "../lib/scanarc-bridge.generated";
+import { CCTP_MAINNET_CHAINS, CCTP_PENDING_DOMAINS, CCTP_V2 } from "../lib/cctp-mainnet";
 
 const OWNER = getAddress("0x25BE27a17580F59206061B8823E3c0FbC1F7c52E");
 const FEE_RECIPIENT = OWNER;
@@ -15,6 +17,7 @@ const UNISWAP_V4_QUOTER = getAddress("0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94
 const UNISWAP_POOL_MANAGER = getAddress("0x8366a39CC670B4001A1121B8F6A443A643e40951");
 const SCANARC_ARCFUN_V5 = getAddress("0x2E42f2daE317be31F8859ff000efaFD67dbb245F");
 const STORAGE_KEY = "scanarc-universal-router:arc-mainnet:v1";
+const BRIDGE_STORAGE_KEY = "scanarc-bridge-registry:arc-mainnet:v1";
 
 function sleep(ms: number) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function explorerAddress(address: string) { return `${arc.blockExplorers.default.url}/address/${address}`; }
@@ -38,6 +41,14 @@ export function Deployer() {
   const [verifyState, setVerifyState] = useState<"idle" | "submitting" | "submitted" | "error">("idle");
   const [verifyMessage, setVerifyMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [bridgeRiskAccepted, setBridgeRiskAccepted] = useState(false);
+  const [bridgeDeploying, setBridgeDeploying] = useState(false);
+  const [bridgeHash, setBridgeHash] = useState<`0x${string}` | null>(null);
+  const [bridgeConfigHash, setBridgeConfigHash] = useState<`0x${string}` | null>(null);
+  const [bridgeAddress, setBridgeAddress] = useState<`0x${string}` | null>(null);
+  const [bridgeConfigured, setBridgeConfigured] = useState(false);
+  const [bridgeVerifyState, setBridgeVerifyState] = useState<"idle" | "submitting" | "submitted" | "error">("idle");
+  const [bridgeVerifyMessage, setBridgeVerifyMessage] = useState<string | null>(null);
 
   const onArc = chainId === arc.id;
   const correctOwner = address?.toLowerCase() === OWNER.toLowerCase();
@@ -49,6 +60,14 @@ export function Deployer() {
       const parsed = JSON.parse(saved) as { address?: string; hash?: `0x${string}` };
       if (parsed.address && isAddress(parsed.address)) setContractAddress(getAddress(parsed.address));
       if (parsed.hash) setHash(parsed.hash);
+      const bridgeSaved = localStorage.getItem(BRIDGE_STORAGE_KEY);
+      if (bridgeSaved) {
+        const bridgeParsed = JSON.parse(bridgeSaved) as { address?: string; hash?: `0x${string}`; configHash?: `0x${string}`; configured?: boolean };
+        if (bridgeParsed.address && isAddress(bridgeParsed.address)) setBridgeAddress(getAddress(bridgeParsed.address));
+        if (bridgeParsed.hash) setBridgeHash(bridgeParsed.hash);
+        if (bridgeParsed.configHash) setBridgeConfigHash(bridgeParsed.configHash);
+        if (bridgeParsed.configured) setBridgeConfigured(true);
+      }
     } catch {}
   }, []);
 
@@ -162,6 +181,63 @@ export function Deployer() {
     } catch (cause) { setVerifyState("error"); setError(cause instanceof Error ? cause.message : "Verification failed."); }
   }
 
+  async function deployBridgeRegistry() {
+    setError(null);
+    try {
+      if (!address || !publicClient) throw new Error("Connect the owner wallet first.");
+      if (!correctOwner) throw new Error(`Wrong wallet. Connect ${OWNER}.`);
+      if (!bridgeRiskAccepted) throw new Error("Confirm the bridge registry safety gate first.");
+      if (!onArc) { await switchChainAsync({ chainId: arc.id }); await sleep(700); }
+      if (!walletClient) throw new Error("Wallet is not ready on Arc.");
+      setBridgeDeploying(true); setBridgeHash(null); setBridgeConfigHash(null); setBridgeAddress(null); setBridgeConfigured(false);
+      localStorage.removeItem(BRIDGE_STORAGE_KEY);
+
+      const data = encodeDeployData({ abi: bridgeRegistryAbi, bytecode: bridgeRegistryBytecode, args: [OWNER] });
+      const nonce = await publicClient.getTransactionCount({ address, blockTag: "pending" });
+      const predictedAddress = getContractAddress({ from: address, nonce: BigInt(nonce) });
+      const txHash = await walletClient.sendTransaction({ account: address, chain: arc, data, gas: 1_500_000n });
+      setBridgeHash(txHash);
+      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
+      if (receipt.status !== "success") throw new Error("Bridge registry deployment reverted.");
+      const deployed = receipt.contractAddress ?? predictedAddress;
+      if (!(await waitForCode(deployed))) throw new Error("Bridge registry bytecode was not found after confirmation.");
+      const deployedOwner = await publicClient.readContract({ address: deployed, abi: bridgeRegistryAbi, functionName: "owner" });
+      if (String(deployedOwner).toLowerCase() !== OWNER.toLowerCase()) throw new Error("Bridge registry owner validation failed.");
+      setBridgeAddress(deployed);
+
+      const configs = CCTP_MAINNET_CHAINS.map((c) => ({
+        chainId: c.chainId, cctpDomain: c.domain, usdc: c.usdc,
+        tokenMessengerV2: CCTP_V2.tokenMessengerV2,
+        messageTransmitterV2: CCTP_V2.messageTransmitterV2,
+        enabled: c.enabled,
+      }));
+      const configTx = await walletClient.writeContract({ account: address, chain: arc, address: deployed, abi: bridgeRegistryAbi, functionName: "configureChains", args: [configs] });
+      setBridgeConfigHash(configTx);
+      const configReceipt = await publicClient.waitForTransactionReceipt({ hash: configTx });
+      if (configReceipt.status !== "success") throw new Error("Bridge registry configuration reverted.");
+      const ids = await publicClient.readContract({ address: deployed, abi: bridgeRegistryAbi, functionName: "getChainIds" });
+      if (ids.length !== CCTP_MAINNET_CHAINS.length) throw new Error("Bridge registry chain-count validation failed.");
+      setBridgeConfigured(true);
+      localStorage.setItem(BRIDGE_STORAGE_KEY, JSON.stringify({ address: deployed, hash: txHash, configHash: configTx, configured: true }));
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Bridge registry deployment failed."); }
+    finally { setBridgeDeploying(false); }
+  }
+
+  async function verifyBridgeRegistry() {
+    setError(null); setBridgeVerifyState("submitting"); setBridgeVerifyMessage(null);
+    try {
+      if (!bridgeAddress) throw new Error("Deploy the bridge registry first.");
+      const encoded = encodeAbiParameters([{ type: "address" }], [OWNER]);
+      const res = await fetch("/api/blockscout/verify-bridge", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address: bridgeAddress, constructorArguments: encoded.slice(2) }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || "Bridge registry verification failed.");
+      setBridgeVerifyState("submitted"); setBridgeVerifyMessage(json?.message || "Bridge registry verification submitted.");
+    } catch (cause) { setBridgeVerifyState("error"); setError(cause instanceof Error ? cause.message : "Bridge verification failed."); }
+  }
+
   function clearSavedRouter() {
     localStorage.removeItem(STORAGE_KEY); setHash(null); setContractAddress(null); setVerifyState("idle"); setError(null);
   }
@@ -199,6 +275,16 @@ export function Deployer() {
     {contractAddress && <section className="card stepCard"><div className="stepHead"><span className="stepNo">05</span><div><h2>Verify on Blockscout</h2><p>Uses your existing BLOCKSCOUT_API_KEY with the exact viaIR build.</p></div></div><div className="contractBox"><span>DEPLOYED ARC-WIDE ROUTER</span><strong>{contractAddress}</strong></div><div className="verifyMeta"><span>{compilerVersion}</span><span>viaIR ON</span><span>Optimizer 200</span></div><button className="secondary" disabled={verifyState === "submitting"} onClick={verifySource}>{verifyState === "submitting" ? "Submitting verification…" : "Verify with Blockscout"}</button>{verifyState === "submitted" && <div className="notice success">✓ {verifyMessage}</div>}<a className="linkButton" href={explorerAddress(contractAddress)} target="_blank" rel="noreferrer">Open on Arc Explorer ↗</a></section>}
 
     <section className="card stepCard"><div className="stepHead"><span className="stepNo">06</span><div><h2>Production routing model</h2><p>Your ScanArc backend chooses the appropriate trusted path; users still see one clean swapper.</p></div></div><div className="details"><div><span>Arcfun bonding token</span><strong>Existing ScanArc V5</strong></div><div><span>Arcfun graduated token</span><strong>Existing ScanArc V5</strong></div><div><span>Other Arc token with V4 liquidity</span><strong>Arc-Wide Router V1</strong></div><div><span>No verified/liquid route</span><strong>Do not offer a swap</strong></div></div></section>
+
+    <section className="card stepCard"><div className="stepHead"><span className="stepNo">07</span><div><h2>Deploy CCTP Bridge Registry V1</h2><p>Non-custodial safety registry for ScanArc bridging. User USDC goes directly to Circle CCTP V2; this contract has no token transfer, approval, burn, mint, or withdrawal functions.</p></div></div>
+      <div className="details"><div><span>Circle TokenMessengerV2</span><code>{CCTP_V2.tokenMessengerV2}</code></div><div><span>Circle MessageTransmitterV2</span><code>{CCTP_V2.messageTransmitterV2}</code></div><div><span>Enabled at deployment</span><strong>{CCTP_MAINNET_CHAINS.map((c) => c.name).join(" · ")}</strong></div><div><span>Held disabled pending native-USDC verification</span><strong>{CCTP_PENDING_DOMAINS.map((c) => c.name).join(" · ")}</strong></div></div>
+      <label className="check"><input type="checkbox" checked={bridgeRiskAccepted} onChange={(e) => setBridgeRiskAccepted(e.target.checked)} /><span>I understand this deploys only a route safety registry. ScanArc must use exact USDC approval to Circle TokenMessengerV2, wait for approval confirmation, then burn through Circle and confirm destination mint/arrival before marking a bridge complete.</span></label>
+      {!bridgeAddress ? <button className="primary deploy" disabled={!isConnected || !correctOwner || !onArc || !bridgeRiskAccepted || bridgeDeploying} onClick={deployBridgeRegistry}>{bridgeDeploying ? "Deploying + configuring registry…" : "Deploy CCTP Bridge Registry V1"}</button> : <div className="notice success strong">✓ Bridge registry deployed{bridgeConfigured ? " and 7 verified routes configured." : "."}</div>}
+      {bridgeHash && <a className="linkButton" href={explorerTx(bridgeHash)} target="_blank" rel="noreferrer">View registry deployment ↗</a>}
+      {bridgeConfigHash && <a className="linkButton" href={explorerTx(bridgeConfigHash)} target="_blank" rel="noreferrer">View route configuration ↗</a>}
+    </section>
+
+    {bridgeAddress && <section className="card stepCard"><div className="stepHead"><span className="stepNo">08</span><div><h2>Verify bridge registry</h2><p>Publishes the exact ScanArcBridgeRegistryV1 source and constructor owner to Blockscout.</p></div></div><div className="contractBox"><span>DEPLOYED BRIDGE REGISTRY</span><strong>{bridgeAddress}</strong></div><div className="verifyMeta"><span>{bridgeCompilerVersion}</span><span>Optimizer 200</span><span>NO CUSTODY</span></div><button className="secondary" disabled={bridgeVerifyState === "submitting"} onClick={verifyBridgeRegistry}>{bridgeVerifyState === "submitting" ? "Submitting verification…" : "Verify bridge registry"}</button>{bridgeVerifyState === "submitted" && <div className="notice success">✓ {bridgeVerifyMessage}</div>}<a className="linkButton" href={explorerAddress(bridgeAddress)} target="_blank" rel="noreferrer">Open registry on Arc Explorer ↗</a></section>}
 
     {(error || connectError) && <section className="card error"><b>Stopped safely</b><p>{error ?? connectError?.message}</p></section>}
     {contractAddress && <button className="ghost reset" onClick={clearSavedRouter}>Clear saved deployment from this browser</button>}
