@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAddress } from "viem";
-import { bridgeStandardJsonInput } from "../../../../lib/scanarc-bridge-verification.generated";
+import { cctpBridgeStandardJsonInput } from "../../../../lib/scanarc-cctp-bridge-verification.generated";
 
 export const runtime = "nodejs";
 const CHAIN_ID = 5042;
@@ -15,8 +15,8 @@ export async function POST(req: NextRequest) {
     const body = new URLSearchParams({
       chain_id: String(CHAIN_ID), module: "contract", action: "verifysourcecode",
       codeformat: "solidity-standard-json-input", contractaddress: address,
-      contractname: "contracts/ScanArcBridgeRegistryV1.sol:ScanArcBridgeRegistryV1",
-      compilerversion: COMPILER, sourceCode: bridgeStandardJsonInput,
+      contractname: "contracts/ScanArcCCTPBridgeV1.sol:ScanArcCCTPBridgeV1",
+      compilerversion: COMPILER, sourceCode: cctpBridgeStandardJsonInput,
       constructorArguments: String(constructorArguments).replace(/^0x/, ""), apikey: key,
     });
     const res = await fetch("https://api.blockscout.com/v2/api", {
@@ -25,7 +25,7 @@ export async function POST(req: NextRequest) {
     });
     const json = await res.json();
     if (!res.ok || String(json?.status) === "0") return NextResponse.json({ error: json?.result || json?.message || `Blockscout verification failed (${res.status}).` }, { status: 422 });
-    return NextResponse.json({ ok: true, message: json?.result || json?.message || "Bridge registry verification submitted." });
+    return NextResponse.json({ ok: true, message: json?.result || json?.message || "CCTP bridge verification submitted." });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Verification submission failed." }, { status: 500 });
   }
