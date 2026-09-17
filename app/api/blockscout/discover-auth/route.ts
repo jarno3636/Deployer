@@ -50,7 +50,9 @@ export async function POST(req: NextRequest) {
     if (!isAddress(token) || !isAddress(curve)) return NextResponse.json({ error: "Valid token and curve addresses are required." }, { status: 400 });
     const tokenLc = token.toLowerCase();
     const curveLc = curve.toLowerCase();
-    const [factoryAbi, curveAbi] = await Promise.all([getAbi(key, FACTORY), getAbi(key, curve)]);
+    // Only the canonical factory needs a verified ABI. Individual bonding curves
+    // may be unverified on Blockscout even when they are legitimate factory deployments.
+    const factoryAbi = await getAbi(key, FACTORY);
 
     const oneAddressFactoryFns = factoryAbi.filter((x: any) => x?.type === "function" && ["view", "pure"].includes(x.stateMutability) && x.inputs?.length === 1 && x.inputs[0]?.type === "address" && x.outputs?.length >= 1 && ["address", "bool"].includes(x.outputs[0]?.type));
 
@@ -74,19 +76,40 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    const curveTokenFns = curveAbi.filter((x: any) => x?.type === "function" && ["view", "pure"].includes(x.stateMutability) && (x.inputs?.length ?? 0) === 0 && x.outputs?.length >= 1 && x.outputs[0]?.type === "address");
+    // Some legitimate Arcfun bonding curves are not individually verified on Blockscout.
+    // For a factory boolean registry (factory(curve) => true), safely probe a small
+    // read-only set of common zero-argument token getters directly on the known curve.
+    // The selector that proves the known official pair is then locked into Router V4.
+    const curveTokenSignatures = [
+      "token()",
+      "TOKEN()",
+      "asset()",
+      "saleToken()",
+      "baseToken()",
+      "tokenAddress()",
+      "getToken()",
+      "erc20()",
+    ];
+
     for (const factoryFn of oneAddressFactoryFns.filter((x: any) => x.outputs[0].type === "bool")) {
       const fsig = `${factoryFn.name}(address)`;
       const fsel = selector(fsig);
       const fdata = `${fsel}${encodeAbiParameters([{ type: "address" }], [curve]).slice(2)}`;
       const fout = await rpcCall(key, FACTORY, fdata);
       if (!fout || wordBool(fout) !== true) continue;
-      for (const curveFn of curveTokenFns) {
-        const csig = `${curveFn.name}()`;
+
+      for (const csig of curveTokenSignatures) {
         const csel = selector(csig);
         const cout = await rpcCall(key, curve, csel);
         if (cout && wordAddress(cout) === tokenLc) {
-          return NextResponse.json({ mode: 3, factorySelector: fsel, curveTokenSelector: csel, factoryFunction: fsig, curveFunction: csig, proof: "factory(curve)=true + curve()=token" });
+          return NextResponse.json({
+            mode: 3,
+            factorySelector: fsel,
+            curveTokenSelector: csel,
+            factoryFunction: fsig,
+            curveFunction: csig,
+            proof: "factory(curve)=true + curve getter returns token",
+          });
         }
       }
     }
