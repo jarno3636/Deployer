@@ -1,0 +1,25 @@
+{
+  "version": 2,
+  "scanArcFeeBps": 25,
+  "canonicalEvmCctpV2": {
+    "tokenMessengerV2": "0x28b5a0e9C621a5BadaA536219b3a228C8168cf5d",
+    "messageTransmitterV2": "0x81D40F21F12A8F0E3252Bccb954D722d4c464B64",
+    "tokenMinterV2": "0xfd78EE919681417d192449715b2594ab58f5D002"
+  },
+  "chains": [
+    {"name":"Ethereum","chainId":1,"domain":0,"usdc":"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48","enabled":true},
+    {"name":"Avalanche","chainId":43114,"domain":1,"usdc":"0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E","enabled":true},
+    {"name":"Optimism","chainId":10,"domain":2,"usdc":"0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85","enabled":true},
+    {"name":"Arbitrum","chainId":42161,"domain":3,"usdc":"0xaf88d065e77c8cC2239327C5EDb3A432268e5831","enabled":true},
+    {"name":"Base","chainId":8453,"domain":6,"usdc":"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913","enabled":true},
+    {"name":"Polygon PoS","chainId":137,"domain":7,"usdc":"0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359","enabled":true},
+    {"name":"Unichain","chainId":130,"domain":10,"usdc":"0x078D782b760474a361dDA0AF3839290b0EF57AD6","enabled":true},
+    {"name":"Linea","chainId":59144,"domain":11,"usdc":"0x176211869cA2b568f2A7D4EE941E073a821EE1ff","enabled":true},
+    {"name":"Sonic","chainId":146,"domain":13,"usdc":"0x29219dd400f2Bf60E5a23d13Be72B486D4038894","enabled":true},
+    {"name":"World Chain","chainId":480,"domain":14,"usdc":"0x79A02482A880bCe3F13E09da970dC34dB4cD24D1","enabled":true},
+    {"name":"Monad","chainId":143,"domain":15,"usdc":"0x754704Bc059F8C67012fEd69BC8A327a5aafb603","enabled":true},
+    {"name":"Sei","chainId":1329,"domain":16,"usdc":"0xe15fC38F6D8c56aF07bbCBe3BAf5708A2Bf42392","enabled":true},
+    {"name":"HyperEVM","chainId":999,"domain":19,"usdc":"0xb88339CB7199b77E23DB6E890353E22632Ba630f","enabled":true},
+    {"name":"Arc","chainId":5042,"domain":26,"usdc":"0x3600000000000000000000000000000000000000","enabled":true}
+  ]
+}
