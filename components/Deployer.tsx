@@ -25,13 +25,14 @@ function explorerTx(hash: string) { return `${arc.blockExplorers.default.url}/tx
 
 export function Deployer() {
   const { address, chainId, isConnected } = useAccount();
-  const { connectors, connect, isPending: isConnecting, error: connectError } = useConnect();
+  const { connectors, connectAsync, reset: resetConnect, error: connectError } = useConnect();
   const { disconnect } = useDisconnect();
   const { switchChainAsync, isPending: isSwitching } = useSwitchChain();
   const { data: walletClient } = useWalletClient({ chainId: arc.id });
   const publicClient = usePublicClient({ chainId: arc.id });
   const injected = useMemo(() => connectors.find((connector) => connector.id === "injected"), [connectors]);
 
+  const [walletOpening, setWalletOpening] = useState(false);
   const [riskAccepted, setRiskAccepted] = useState(false);
   const [deploying, setDeploying] = useState(false);
   const [hash, setHash] = useState<`0x${string}` | null>(null);
@@ -93,6 +94,43 @@ export function Deployer() {
       setInfraOk(false);
       setError(cause instanceof Error ? cause.message : "Infrastructure check failed.");
     } finally { setCheckingInfra(false); }
+  }
+
+  async function connectOwnerWallet() {
+    if (!injected || walletOpening) return;
+    setError(null);
+    setWalletOpening(true);
+    resetConnect();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        connectAsync({ connector: injected }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error("WALLET_CONNECT_TIMEOUT")), 15_000);
+        }),
+      ]);
+    } catch (cause) {
+      // Some iOS wallet browsers grant the permission but fail to resolve the
+      // original EIP-1193 request. If permission was granted, a reload lets
+      // Wagmi hydrate the now-authorized account instead of leaving the UI stuck.
+      const ethereum = (window as any).ethereum;
+      if (cause instanceof Error && cause.message === "WALLET_CONNECT_TIMEOUT" && ethereum?.request) {
+        try {
+          const accounts = await ethereum.request({ method: "eth_accounts" }) as string[];
+          if (Array.isArray(accounts) && accounts.length > 0) {
+            window.location.reload();
+            return;
+          }
+        } catch {}
+        setError("Wallet permission did not return to ScanArc. Return to this page and tap Connect wallet again.");
+        return;
+      }
+      setError(cause instanceof Error ? cause.message : "Wallet connection failed.");
+    } finally {
+      if (timer) clearTimeout(timer);
+      resetConnect();
+      setWalletOpening(false);
+    }
   }
 
   async function repairWalletArcNetwork() {
@@ -249,7 +287,7 @@ export function Deployer() {
     <section className="statusGrid"><article><span>SCANARC FEE</span><b>0.25%</b><small>Always collected in USDC</small></article><article><span>DEX</span><b>UNISWAP V4</b><small>Official Arc deployment</small></article><article><span>ROUTES</span><b>1–4 HOPS</b><small>Exact-input only</small></article><article><span>ARCFUN</span><b>V5 STAYS</b><small>Lifecycle route remains separate</small></article></section>
 
     <section className="card stepCard"><div className="stepHead"><span className="stepNo">01</span><div><h2>Connect owner</h2><p>Use the same ScanArc owner wallet on Arc.</p></div></div>
-      {!isConnected ? <button className="primary" disabled={!injected || isConnecting} onClick={() => injected && connect({ connector: injected })}>{isConnecting ? "Opening wallet…" : "Connect wallet"}</button> : <div className="walletBox"><div><span>CONNECTED WALLET</span><b className={correctOwner ? "good" : "bad"}>{address}</b></div><button className="ghost compact" onClick={() => disconnect()}>Disconnect</button></div>}
+      {!isConnected ? <button className="primary" disabled={!injected || walletOpening} onClick={connectOwnerWallet}>{walletOpening ? "Opening wallet…" : "Connect wallet"}</button> : <div className="walletBox"><div><span>CONNECTED WALLET</span><b className={correctOwner ? "good" : "bad"}>{address}</b></div><button className="ghost compact" onClick={() => disconnect()}>Disconnect</button></div>}
       {isConnected && !correctOwner && <div className="notice danger">Wrong wallet. Connect <code>{OWNER}</code>.</div>}
       {isConnected && correctOwner && !onArc && <button className="primary" disabled={isSwitching} onClick={() => switchChainAsync({ chainId: arc.id })}>{isSwitching ? "Switching…" : "Switch to Arc Mainnet"}</button>}
       {isConnected && correctOwner && onArc && <div className="notice success">✓ Approved owner connected on Arc.</div>}
