@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
       action: "verifysourcecode",
       codeformat: "solidity-standard-json-input",
       contractaddress: address,
-      contractname: "contracts/ScanArcRouterV5.sol:ScanArcRouterV5",
+      contractname: "contracts/ScanArcUniversalRouterV1.sol:ScanArcUniversalRouterV1",
       compilerversion: COMPILER,
       sourceCode: standardJsonInput,
       constructorArguments: String(constructorArguments).replace(/^0x/, ""),
