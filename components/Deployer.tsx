@@ -193,9 +193,9 @@ export function Deployer() {
       {isConnected && !correctOwner && <div className="notice danger">Wrong wallet. Connect <code>{OWNER}</code>.</div>}{isConnected && correctOwner && !onArc && <button className="primary" disabled={isSwitching} onClick={() => switchChainAsync({ chainId: arc.id })}>{isSwitching ? "Switching…" : "Switch to Arc Mainnet"}</button>}{isConnected && correctOwner && onArc && <div className="notice success">✓ Approved owner connected on Arc.</div>}<button className="secondary" disabled={!isConnected} onClick={repairWalletArcNetwork}>Repair Arc network in wallet</button>
     </section>
 
-    <section className="card stepCard"><div className="stepHead"><span className="stepNo">02</span><div><h2>Discover factory authentication</h2><p>This uses your server-side BLOCKSCOUT_API_KEY to read the verified factory/curve ABIs and test the real getter. The API key never reaches the browser.</p></div></div>
+    <section className="card stepCard"><div className="stepHead"><span className="stepNo">02</span><div><h2>Discover factory authentication</h2><p>This uses your server-side BLOCKSCOUT_API_KEY to read the verified factory ABI and prove the token/curve relationship on-chain. The curve itself does not need to be verified.</p></div></div>
       <label className="field">Known official token<input value={testToken} onChange={(e) => { setTestToken(e.target.value); setAuthConfig(null); }} autoCapitalize="none" autoCorrect="off" /></label><label className="field">Known official curve<input value={testCurve} onChange={(e) => { setTestCurve(e.target.value); setAuthConfig(null); }} autoCapitalize="none" autoCorrect="off" /></label>
-      <button className="secondary" disabled={discovering} onClick={discoverAuthentication}>{discovering ? "Reading verified ABIs…" : "Discover & prove factory relationship"}</button>
+      <button className="secondary" disabled={discovering} onClick={discoverAuthentication}>{discovering ? "Proving factory relationship…" : "Discover & prove factory relationship"}</button>
       {authConfig && <div className="notice success strong">✓ Proven: {authConfig.proof}<br/><code>{authConfig.factoryFunction}</code>{authConfig.curveFunction ? <> + <code>{authConfig.curveFunction}</code></> : null}<br/>Factory selector: <code>{authConfig.factorySelector}</code></div>}
     </section>
 
