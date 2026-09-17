@@ -1,28 +1,14 @@
 {
-  "network": {
-    "name": "Arc",
-    "chainId": 5042,
-    "nativeCurrency": "USDC",
-    "rpcUrl": "https://rpc.mainnet.arc.io",
-    "explorerUrl": "https://explorer.arc.io"
-  },
-  "contract": {
-    "name": "ScanArcRouter",
-    "compiler": "solc 0.8.30",
-    "optimizerEnabled": true,
-    "optimizerRuns": 200,
-    "constructorArguments": {
-      "initialOwner": "0x25BE27a17580F59206061B8823E3c0FbC1F7c52E",
-      "initialFeeRecipient": "0x25BE27a17580F59206061B8823E3c0FbC1F7c52E"
-    },
-    "feeBps": 25,
-    "feePercent": "0.25%",
-    "arcUsdc": "0x3600000000000000000000000000000000000000"
-  },
-  "initialPairCandidate": {
-    "symbol": "STOW",
-    "token": "0x305bf34dea03a0fb2bd7a24295f00d8163601aae",
-    "curve": "0x4beec7f96c0582e1e573d16aa113d6fe01864029",
-    "warning": "Confirm both addresses independently on Arc before calling setPair. Pair registration is a separate transaction after deployment."
-  }
+  "chain": "Arc Mainnet",
+  "chainId": 5042,
+  "contract": "ScanArcUniversalRouterV1",
+  "owner": "0x25BE27a17580F59206061B8823E3c0FbC1F7c52E",
+  "feeRecipient": "0x25BE27a17580F59206061B8823E3c0FbC1F7c52E",
+  "scanArcFeeBps": 25,
+  "arcUsdc": "0x3600000000000000000000000000000000000000",
+  "uniswapUniversalRouter": "0x4fcA4a51Ab4F23A7447b3284fBd7D73289A89Fb1",
+  "permit2": "0x000000000022D473030F116dDEE9F6B43aC78BA3",
+  "uniswapV4Quoter": "0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94",
+  "uniswapPoolManager": "0x8366a39CC670B4001A1121B8F6A443A643e40951",
+  "existingScanArcArcfunV5": "0x2E42f2daE317be31F8859ff000efaFD67dbb245F"
 }
