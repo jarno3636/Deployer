@@ -13,19 +13,29 @@ export async function POST(req: NextRequest) {
     const { address, constructorArguments = "" } = await req.json();
     if (!isAddress(address)) return NextResponse.json({ error: "Valid deployed contract address required." }, { status: 400 });
     const body = new URLSearchParams({
-      chain_id: String(CHAIN_ID), module: "contract", action: "verifysourcecode",
-      codeformat: "solidity-standard-json-input", contractaddress: address,
-      contractname: "contracts/ScanArcRouterV4.sol:ScanArcRouterV4", compilerversion: COMPILER,
-      sourceCode: standardJsonInput, constructorArguments: String(constructorArguments).replace(/^0x/, ""), apikey: key,
+      chain_id: String(CHAIN_ID),
+      module: "contract",
+      action: "verifysourcecode",
+      codeformat: "solidity-standard-json-input",
+      contractaddress: address,
+      contractname: "contracts/ScanArcRouterV5.sol:ScanArcRouterV5",
+      compilerversion: COMPILER,
+      sourceCode: standardJsonInput,
+      constructorArguments: String(constructorArguments).replace(/^0x/, ""),
+      apikey: key,
     });
     const res = await fetch("https://api.blockscout.com/v2/api", {
-      method: "POST", headers: { "content-type": "application/x-www-form-urlencoded", authorization: `Bearer ${key}` },
-      body: body.toString(), cache: "no-store",
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", authorization: `Bearer ${key}` },
+      body: body.toString(),
+      cache: "no-store",
     });
     const json = await res.json();
-    if (!res.ok || String(json?.status) === "0") return NextResponse.json({ error: json?.result || json?.message || `Blockscout verification failed (${res.status}).` }, { status: 422 });
+    if (!res.ok || String(json?.status) === "0") {
+      return NextResponse.json({ error: json?.result || json?.message || `Blockscout verification failed (${res.status}).` }, { status: 422 });
+    }
     return NextResponse.json({ ok: true, message: json?.result || json?.message || "Verification submitted." });
-  } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "Verification submission failed." }, { status: 500 });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Verification submission failed." }, { status: 500 });
   }
 }
