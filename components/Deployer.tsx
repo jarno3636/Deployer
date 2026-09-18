@@ -4,21 +4,14 @@ import { useEffect, useMemo, useState } from "react";
 import { encodeAbiParameters, encodeDeployData, getAddress, getContractAddress, isAddress } from "viem";
 import { useAccount, useConnect, useDisconnect, usePublicClient, useSwitchChain, useWalletClient } from "wagmi";
 import { arc, ARC_RPC_URLS } from "../lib/arc";
-import { cctpBridgeAbi, cctpBridgeBytecode, cctpBridgeCompilerVersion } from "../lib/scanarc-cctp-bridge.generated";
-import { CCTP_MAINNET_CHAINS, CCTP_V2 } from "../lib/cctp-mainnet";
+import { scanArcV6Abi, scanArcV6Bytecode, scanArcV6CompilerVersion } from "../lib/scanarc-v6.generated";
 
 const OWNER = getAddress("0x25BE27a17580F59206061B8823E3c0FbC1F7c52E");
-const FEE_RECIPIENT = OWNER;
-const ARC_USDC = getAddress("0x3600000000000000000000000000000000000000");
-const UNISWAP_UNIVERSAL_ROUTER = getAddress("0x4fcA4a51Ab4F23A7447b3284fBd7D73289A89Fb1");
-const UNISWAP_PERMIT2 = getAddress("0x000000000022D473030F116dDEE9F6B43aC78BA3");
-const UNISWAP_V4_QUOTER = getAddress("0x8Dc178eFB8111BB0973Dd9d722ebeFF267c98F94");
-const UNISWAP_POOL_MANAGER = getAddress("0x8366a39CC670B4001A1121B8F6A443A643e40951");
-const SCANARC_ARCFUN_V5 = getAddress("0x2E42f2daE317be31F8859ff000efaFD67dbb245F");
+const ARCFUN_FACTORY = getAddress("0xBBf81Fd835B471C86d094eAaD35BB10068a987f8");
+const LEGACY_V5 = getAddress("0x2E42f2daE317be31F8859ff000efaFD67dbb245F");
 const EXISTING_ARC_WIDE_ROUTER = getAddress("0x303c8889930187a7b11280292055dd1364552d29");
-const BRIDGE_STORAGE_KEY = "scanarc-cctp-bridge:arc-mainnet:v1";
-const ARC_CCTP_DOMAIN = 26;
-const DESTINATION_DOMAINS = CCTP_MAINNET_CHAINS.filter((c) => c.domain !== ARC_CCTP_DOMAIN).map((c) => c.domain);
+const EXISTING_CCTP_BRIDGE = getAddress("0x777Fa929eA77a42aF8cb974d6C3e013D79cc1cfD");
+const V6_STORAGE_KEY = "scanarc-router-v6:arc-mainnet";
 
 function sleep(ms: number) { return new Promise((resolve) => setTimeout(resolve, ms)); }
 function explorerAddress(address: string) { return `${arc.blockExplorers.default.url}/address/${address}`; }
@@ -34,70 +27,55 @@ export function Deployer() {
   const injected = useMemo(() => connectors.find((connector) => connector.id === "injected"), [connectors]);
 
   const [walletOpening, setWalletOpening] = useState(false);
-  const [bridgeRiskAccepted, setBridgeRiskAccepted] = useState(false);
-  const [bridgeDeploying, setBridgeDeploying] = useState(false);
-  const [bridgeHash, setBridgeHash] = useState<`0x${string}` | null>(null);
-  const [bridgeAddress, setBridgeAddress] = useState<`0x${string}` | null>(null);
-  const [bridgeVerifyState, setBridgeVerifyState] = useState<"idle" | "submitting" | "submitted" | "error">("idle");
-  const [bridgeVerifyMessage, setBridgeVerifyMessage] = useState<string | null>(null);
+  const [pairAttester, setPairAttester] = useState<`0x${string}` | null>(null);
+  const [attesterError, setAttesterError] = useState<string | null>(null);
+  const [riskAccepted, setRiskAccepted] = useState(false);
+  const [deploying, setDeploying] = useState(false);
+  const [txHash, setTxHash] = useState<`0x${string}` | null>(null);
+  const [routerAddress, setRouterAddress] = useState<`0x${string}` | null>(null);
+  const [verifyState, setVerifyState] = useState<"idle" | "submitting" | "submitted" | "error">("idle");
+  const [verifyMessage, setVerifyMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const correctOwner = !!address && address.toLowerCase() === OWNER.toLowerCase();
   const onArc = chainId === arc.id;
-  const correctOwner = address?.toLowerCase() === OWNER.toLowerCase();
 
   useEffect(() => {
     try {
-      const saved = localStorage.getItem(BRIDGE_STORAGE_KEY);
+      const saved = localStorage.getItem(V6_STORAGE_KEY);
       if (!saved) return;
-      const parsed = JSON.parse(saved) as { address?: string; hash?: `0x${string}` };
-      if (parsed.address && isAddress(parsed.address)) setBridgeAddress(getAddress(parsed.address));
-      if (parsed.hash) setBridgeHash(parsed.hash);
-    } catch {}
+      const parsed = JSON.parse(saved);
+      if (isAddress(parsed?.address)) setRouterAddress(getAddress(parsed.address));
+      if (/^0x[0-9a-fA-F]{64}$/.test(parsed?.hash ?? "")) setTxHash(parsed.hash);
+    } catch { /* ignore malformed browser state */ }
   }, []);
 
-  async function waitForCode(target: `0x${string}`) {
-    if (!publicClient) return false;
-    for (let attempt = 0; attempt < 12; attempt += 1) {
-      const code = await publicClient.getBytecode({ address: target });
-      if (code && code !== "0x") return true;
-      await sleep(1800);
-    }
-    return false;
-  }
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch("/api/scanarc/attester", { cache: "no-store" });
+        const json = await res.json();
+        if (!res.ok || !isAddress(json?.address)) throw new Error(json?.error || "Pair attester is not configured.");
+        if (!cancelled) { setPairAttester(getAddress(json.address)); setAttesterError(null); }
+      } catch (cause) {
+        if (!cancelled) setAttesterError(cause instanceof Error ? cause.message : "Pair attester lookup failed.");
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   async function connectOwnerWallet() {
-    if (!injected || walletOpening) return;
     setError(null);
+    if (!injected) { setError("No injected wallet was detected."); return; }
     setWalletOpening(true);
     resetConnect();
-    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      await Promise.race([
-        connectAsync({ connector: injected }),
-        new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new Error("WALLET_CONNECT_TIMEOUT")), 15_000);
-        }),
-      ]);
+      await connectAsync({ connector: injected, chainId: arc.id });
+      await sleep(500);
     } catch (cause) {
-      // Some iOS wallet browsers grant the permission but fail to resolve the
-      // original EIP-1193 request. If permission was granted, a reload lets
-      // Wagmi hydrate the now-authorized account instead of leaving the UI stuck.
-      const ethereum = (window as any).ethereum;
-      if (cause instanceof Error && cause.message === "WALLET_CONNECT_TIMEOUT" && ethereum?.request) {
-        try {
-          const accounts = await ethereum.request({ method: "eth_accounts" }) as string[];
-          if (Array.isArray(accounts) && accounts.length > 0) {
-            window.location.reload();
-            return;
-          }
-        } catch {}
-        setError("Wallet permission did not return to ScanArc. Return to this page and tap Connect wallet again.");
-        return;
-      }
       setError(cause instanceof Error ? cause.message : "Wallet connection failed.");
     } finally {
-      if (timer) clearTimeout(timer);
-      resetConnect();
       setWalletOpening(false);
     }
   }
@@ -105,89 +83,125 @@ export function Deployer() {
   async function repairWalletArcNetwork() {
     setError(null);
     try {
-      if (!walletClient) throw new Error("Connect your wallet first.");
-      await walletClient.request({ method: "wallet_addEthereumChain", params: [{ chainId: "0x13b2", chainName: "Arc", nativeCurrency: { name: "USD Coin", symbol: "USDC", decimals: 18 }, rpcUrls: [...ARC_RPC_URLS], blockExplorerUrls: [arc.blockExplorers.default.url] }] } as any);
-      await switchChainAsync({ chainId: arc.id });
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "Wallet network repair was not accepted."); }
+      const ethereum = (window as any).ethereum;
+      if (!ethereum?.request) throw new Error("Wallet provider unavailable.");
+      try {
+        await ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: `0x${arc.id.toString(16)}` }] });
+      } catch (switchError: any) {
+        if (switchError?.code !== 4902) throw switchError;
+        await ethereum.request({
+          method: "wallet_addEthereumChain",
+          params: [{ chainId: `0x${arc.id.toString(16)}`, chainName: arc.name, nativeCurrency: arc.nativeCurrency, rpcUrls: [...ARC_RPC_URLS], blockExplorerUrls: [arc.blockExplorers.default.url] }],
+        });
+      }
+    } catch (cause) { setError(cause instanceof Error ? cause.message : "Could not repair Arc network."); }
   }
 
-  function bridgeConstructorArgs() {
-    return [OWNER, FEE_RECIPIENT, ARC_USDC, CCTP_V2.tokenMessengerV2, ARC_CCTP_DOMAIN, DESTINATION_DOMAINS] as const;
+  function constructorArgs() {
+    if (!pairAttester) throw new Error("Pair attester is not configured yet.");
+    return [ARCFUN_FACTORY, OWNER, pairAttester] as const;
   }
 
-  async function validateBridge(target: `0x${string}`) {
-    if (!publicClient) throw new Error("Arc RPC is unavailable.");
-    const read = (functionName: string, args?: readonly unknown[]) => publicClient.readContract({ address: target, abi: cctpBridgeAbi, functionName, args } as any);
-    const [owner, recipient, fee, usdc, messenger, localDomain] = await Promise.all([
-      read("owner"), read("feeRecipient"), read("FEE_BPS"), read("USDC"), read("TOKEN_MESSENGER_V2"), read("LOCAL_DOMAIN"),
-    ]);
-    if (String(owner).toLowerCase() !== OWNER.toLowerCase()) throw new Error("Bridge owner validation failed.");
-    if (String(recipient).toLowerCase() !== FEE_RECIPIENT.toLowerCase()) throw new Error("Bridge fee recipient validation failed.");
-    if (BigInt(String(fee)) !== 25n) throw new Error("Bridge fee validation failed. Expected fixed 25 bps.");
-    if (String(usdc).toLowerCase() !== ARC_USDC.toLowerCase()) throw new Error("Bridge Arc USDC validation failed.");
-    if (String(messenger).toLowerCase() !== CCTP_V2.tokenMessengerV2.toLowerCase()) throw new Error("Circle TokenMessengerV2 validation failed.");
-    if (Number(localDomain) !== ARC_CCTP_DOMAIN) throw new Error("Arc CCTP domain validation failed.");
-    for (const domain of DESTINATION_DOMAINS) {
-      const enabled = await read("destinationEnabled", [domain]);
-      if (enabled !== true) throw new Error(`CCTP destination domain ${domain} is not enabled.`);
+  async function waitForCode(target: `0x${string}`) {
+    if (!publicClient) return false;
+    for (let i = 0; i < 20; i++) {
+      const code = await publicClient.getBytecode({ address: target });
+      if (code && code !== "0x") return true;
+      await sleep(500);
     }
-    const localEnabled = await read("destinationEnabled", [ARC_CCTP_DOMAIN]);
-    if (localEnabled === true) throw new Error("Local Arc domain must not be enabled as a destination.");
+    return false;
   }
-  async function deployCctpBridge() {
+
+  async function validateV6(target: `0x${string}`) {
+    if (!publicClient || !pairAttester) throw new Error("Validation client is not ready.");
+    const read = (functionName: string, args?: readonly unknown[]) => publicClient.readContract({
+      address: target,
+      abi: scanArcV6Abi,
+      functionName: functionName as any,
+      args: args as any,
+    });
+    const [owner, attester, factory, version, direct] = await Promise.all([
+      read("owner"), read("pairAttester"), read("arcfunFactory"), read("VERSION"), read("DIRECT_CURVE_EXECUTION"),
+    ]);
+    if (String(owner).toLowerCase() !== OWNER.toLowerCase()) throw new Error("V6 owner validation failed.");
+    if (String(attester).toLowerCase() !== pairAttester.toLowerCase()) throw new Error("V6 pair attester validation failed.");
+    if (String(factory).toLowerCase() !== ARCFUN_FACTORY.toLowerCase()) throw new Error("V6 Arcfun factory validation failed.");
+    if (BigInt(String(version)) !== 6n) throw new Error("V6 version validation failed.");
+    if (direct !== true) throw new Error("V6 direct-curve execution flag validation failed.");
+  }
+
+  async function deployV6() {
     setError(null);
     try {
       if (!address || !publicClient) throw new Error("Connect the owner wallet first.");
       if (!correctOwner) throw new Error(`Wrong wallet. Connect ${OWNER}.`);
-      if (!bridgeRiskAccepted) throw new Error("Confirm the CCTP bridge safety gate first.");
+      if (!pairAttester) throw new Error(attesterError || "Pair attester is not configured.");
+      if (!riskAccepted) throw new Error("Confirm the V6 execution model first.");
       if (!onArc) { await switchChainAsync({ chainId: arc.id }); await sleep(700); }
       if (!walletClient) throw new Error("Wallet is not ready on Arc.");
-      setBridgeDeploying(true); setBridgeHash(null); setBridgeAddress(null);
-      localStorage.removeItem(BRIDGE_STORAGE_KEY);
 
-      const data = encodeDeployData({ abi: cctpBridgeAbi, bytecode: cctpBridgeBytecode, args: bridgeConstructorArgs() as any });
+      setDeploying(true); setTxHash(null); setRouterAddress(null); setVerifyState("idle");
+      localStorage.removeItem(V6_STORAGE_KEY);
+
+      const data = encodeDeployData({ abi: scanArcV6Abi, bytecode: scanArcV6Bytecode, args: constructorArgs() as any });
       const nonce = await publicClient.getTransactionCount({ address, blockTag: "pending" });
       const predictedAddress = getContractAddress({ from: address, nonce: BigInt(nonce) });
-      const txHash = await walletClient.sendTransaction({ account: address, chain: arc, data, gas: 2_500_000n });
-      setBridgeHash(txHash);
-      const receipt = await publicClient.waitForTransactionReceipt({ hash: txHash });
-      if (receipt.status !== "success") throw new Error("CCTP bridge deployment reverted.");
+      const hash = await walletClient.sendTransaction({ account: address, chain: arc, data, gas: 1_500_000n });
+      setTxHash(hash);
+      const receipt = await publicClient.waitForTransactionReceipt({ hash });
+      if (receipt.status !== "success") throw new Error("ScanArc Router V6 deployment reverted.");
       const deployed = receipt.contractAddress ?? predictedAddress;
-      if (!(await waitForCode(deployed))) throw new Error("CCTP bridge bytecode was not found after confirmation.");
-      await validateBridge(deployed);
-      setBridgeAddress(deployed);
-      localStorage.setItem(BRIDGE_STORAGE_KEY, JSON.stringify({ address: deployed, hash: txHash }));
-    } catch (cause) { setError(cause instanceof Error ? cause.message : "CCTP bridge deployment failed."); }
-    finally { setBridgeDeploying(false); }
+      if (!(await waitForCode(deployed))) throw new Error("V6 bytecode was not found after confirmation.");
+      await validateV6(deployed);
+      setRouterAddress(deployed);
+      localStorage.setItem(V6_STORAGE_KEY, JSON.stringify({ address: deployed, hash }));
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "V6 deployment failed.");
+    } finally { setDeploying(false); }
   }
 
-  async function verifyCctpBridge() {
-    setError(null); setBridgeVerifyState("submitting"); setBridgeVerifyMessage(null);
+  async function verifyV6() {
+    setError(null); setVerifyState("submitting"); setVerifyMessage(null);
     try {
-      if (!bridgeAddress) throw new Error("Deploy the CCTP bridge first.");
+      if (!routerAddress) throw new Error("Deploy V6 first.");
       const encoded = encodeAbiParameters(
-        [{ type: "address" }, { type: "address" }, { type: "address" }, { type: "address" }, { type: "uint32" }, { type: "uint32[]" }],
-        bridgeConstructorArgs() as any,
+        [{ type: "address" }, { type: "address" }, { type: "address" }],
+        constructorArgs() as any,
       );
-      const res = await fetch("/api/blockscout/verify-bridge", {
-        method: "POST", headers: { "content-type": "application/json" },
-        body: JSON.stringify({ address: bridgeAddress, constructorArguments: encoded.slice(2) }),
+      const res = await fetch("/api/blockscout/verify-v6", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ address: routerAddress, constructorArguments: encoded.slice(2) }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || "CCTP bridge verification failed.");
-      setBridgeVerifyState("submitted"); setBridgeVerifyMessage(json?.message || "CCTP bridge verification submitted.");
-    } catch (cause) { setBridgeVerifyState("error"); setError(cause instanceof Error ? cause.message : "Bridge verification failed."); }
+      if (!res.ok) throw new Error(json?.error || "V6 verification failed.");
+      setVerifyState("submitted"); setVerifyMessage(json?.message || "V6 verification submitted.");
+    } catch (cause) {
+      setVerifyState("error"); setError(cause instanceof Error ? cause.message : "V6 verification failed.");
+    }
   }
 
-  function clearSavedBridge() {
-    localStorage.removeItem(BRIDGE_STORAGE_KEY); setBridgeHash(null); setBridgeAddress(null); setBridgeVerifyState("idle"); setError(null);
+  function clearSavedV6() {
+    localStorage.removeItem(V6_STORAGE_KEY);
+    setTxHash(null); setRouterAddress(null); setVerifyState("idle"); setVerifyMessage(null); setError(null);
   }
 
   return <main className="shell">
-    <header className="hero"><div className="brandRow"><div className="mark">A</div><div><div className="eyebrow">SCANARC · ARC MAINNET</div><div className="networkPill"><i /> Arc 5042</div></div></div><h1>ScanArc CCTP Bridge V1</h1><p>Deploy only the missing Arc CCTP execution adapter. Existing ScanArc routers remain untouched.</p></header>
-    <section className="statusGrid"><article><span>BRIDGE FEE</span><b>0.25%</b><small>Fixed at 25 bps</small></article><article><span>BRIDGE</span><b>CCTP V2</b><small>Native USDC</small></article><article><span>DEPLOYMENTS</span><b>1 NEW</b><small>No registry transaction</small></article><article><span>EXISTING ROUTERS</span><b>KEEP</b><small>No redeployment</small></article></section>
+    <header className="hero">
+      <div className="brandRow"><div className="mark">A</div><div><div className="eyebrow">SCANARC · ARC MAINNET</div><div className="networkPill"><i /> Arc 5042</div></div></div>
+      <h1>ScanArc Router V6</h1>
+      <p>Replace V5's incompatible curve intermediary with a no-custody authorization gate built for direct canonical Arcfun curve execution.</p>
+    </header>
 
-    <section className="card stepCard"><div className="stepHead"><span className="stepNo">01</span><div><h2>Connect owner</h2><p>Use the existing ScanArc owner wallet on Arc.</p></div></div>
+    <section className="statusGrid">
+      <article><span>NEW DEPLOYMENTS</span><b>1</b><small>Router V6 only</small></article>
+      <article><span>CURVE EXECUTION</span><b>DIRECT</b><small>User → canonical curve</small></article>
+      <article><span>CUSTODY</span><b>NONE</b><small>V6 never holds trade assets</small></article>
+      <article><span>OLDER CONTRACTS</span><b>KEEP</b><small>No redeploys</small></article>
+    </section>
+
+    <section className="card stepCard">
+      <div className="stepHead"><span className="stepNo">01</span><div><h2>Connect owner</h2><p>Deploy V6 from the existing ScanArc owner wallet.</p></div></div>
       {!isConnected ? <button className="primary" disabled={!injected || walletOpening} onClick={connectOwnerWallet}>{walletOpening ? "Opening wallet…" : "Connect wallet"}</button> : <div className="walletBox"><div><span>CONNECTED WALLET</span><b className={correctOwner ? "good" : "bad"}>{address}</b></div><button className="ghost compact" onClick={() => disconnect()}>Disconnect</button></div>}
       {isConnected && !correctOwner && <div className="notice danger">Wrong wallet. Connect <code>{OWNER}</code>.</div>}
       {isConnected && correctOwner && !onArc && <button className="primary" disabled={isSwitching} onClick={() => switchChainAsync({ chainId: arc.id })}>{isSwitching ? "Switching…" : "Switch to Arc Mainnet"}</button>}
@@ -195,21 +209,49 @@ export function Deployer() {
       <button className="secondary" disabled={!isConnected} onClick={repairWalletArcNetwork}>Repair Arc network in wallet</button>
     </section>
 
-    <section className="card stepCard"><div className="stepHead"><span className="stepNo">02</span><div><h2>Preserve existing ScanArc contracts</h2><p>This deployer will not redeploy or replace the routers already implemented.</p></div></div>
-      <div className="details"><div><span>Existing Arcfun V5</span><code>{SCANARC_ARCFUN_V5}</code></div><div><span>Existing Arc-Wide Router V1</span><code>{EXISTING_ARC_WIDE_ROUTER}</code></div><div><span>Action</span><strong>Leave both unchanged</strong></div></div>
+    <section className="card stepCard">
+      <div className="stepHead"><span className="stepNo">02</span><div><h2>Preserve existing deployments</h2><p>V6 is additive on-chain. Nothing already deployed is redeployed or initialized again.</p></div></div>
+      <div className="details">
+        <div><span>Legacy Arcfun V5</span><code>{LEGACY_V5}</code></div>
+        <div><span>Arc-Wide Router V1</span><code>{EXISTING_ARC_WIDE_ROUTER}</code></div>
+        <div><span>CCTP Bridge V1</span><code>{EXISTING_CCTP_BRIDGE}</code></div>
+        <div><span>Action</span><strong>Leave all three unchanged</strong></div>
+      </div>
+      <div className="notice">V5 stays deployed but should no longer execute pre-graduation curve trades after the app is switched to V6.</div>
     </section>
 
-    <section className="card stepCard"><div className="stepHead"><span className="stepNo">03</span><div><h2>Deploy CCTP Bridge V1</h2><p>One Arc deployment. Destination domains are encoded in the constructor, so there is no registry deployment and no follow-up configuration transaction.</p></div></div>
-      <div className="details"><div><span>Arc native USDC</span><code>{ARC_USDC}</code></div><div><span>Circle TokenMessengerV2</span><code>{CCTP_V2.tokenMessengerV2}</code></div><div><span>Local CCTP domain</span><strong>26 · Arc</strong></div><div><span>Destination networks</span><strong>{CCTP_MAINNET_CHAINS.filter((c) => c.domain !== ARC_CCTP_DOMAIN).map((c) => c.name).join(" · ")}</strong></div><div><span>ScanArc fee</span><strong>0.25% · immutable constant</strong></div><div><span>Fee recipient</span><code>{FEE_RECIPIENT}</code></div></div>
-      <label className="check"><input type="checkbox" checked={bridgeRiskAccepted} onChange={(e) => setBridgeRiskAccepted(e.target.checked)} /><span>I understand this deploys the Arc source-chain CCTP execution adapter. It takes the fixed 0.25% ScanArc fee, burns the remainder through Circle CCTP V2, and does not intentionally retain user USDC.</span></label>
-      {!bridgeAddress ? <button className="primary deploy" disabled={!isConnected || !correctOwner || !onArc || !bridgeRiskAccepted || bridgeDeploying} onClick={deployCctpBridge}>{bridgeDeploying ? "Deploying CCTP Bridge V1…" : "Deploy CCTP Bridge V1"}</button> : <div className="notice success strong">✓ CCTP Bridge V1 deployed and on-chain settings validated.</div>}
-      {bridgeHash && <a className="linkButton" href={explorerTx(bridgeHash)} target="_blank" rel="noreferrer">View bridge deployment ↗</a>}
+    <section className="card stepCard">
+      <div className="stepHead"><span className="stepNo">03</span><div><h2>Validate V6 model</h2><p>Arcfun's pre-graduation launch guard makes intermediary token custody incompatible with a normal router. V6 therefore verifies the canonical pair without touching trade funds.</p></div></div>
+      <div className="details">
+        <div><span>Canonical Arcfun factory</span><code>{ARCFUN_FACTORY}</code></div>
+        <div><span>Pair attester</span>{pairAttester ? <code>{pairAttester}</code> : <strong className="bad">Not configured</strong>}</div>
+        <div><span>Pre-graduation path</span><strong>Wallet → curve directly</strong></div>
+        <div><span>Graduated path</span><strong>Existing Arc-Wide Router V1</strong></div>
+        <div><span>V6 asset custody</span><strong>None</strong></div>
+        <div><span>Follow-up config tx</span><strong>None</strong></div>
+      </div>
+      {attesterError && <div className="notice danger">{attesterError}</div>}
+      <label className="check"><input type="checkbox" checked={riskAccepted} onChange={(e) => setRiskAccepted(e.target.checked)} /><span>I understand V6 is the authorization gate for direct canonical curve calls. It does not pull USDC/tokens into itself and does not attempt the incompatible V5 intermediary trade path.</span></label>
     </section>
 
-    {bridgeAddress && <section className="card stepCard"><div className="stepHead"><span className="stepNo">04</span><div><h2>Verify CCTP Bridge V1</h2><p>Publishes the exact execution contract source and exact constructor arguments to Blockscout.</p></div></div><div className="contractBox"><span>DEPLOYED CCTP BRIDGE</span><strong>{bridgeAddress}</strong></div><div className="verifyMeta"><span>{cctpBridgeCompilerVersion}</span><span>Optimizer 200</span><span>FEE 25 BPS</span></div><button className="secondary" disabled={bridgeVerifyState === "submitting"} onClick={verifyCctpBridge}>{bridgeVerifyState === "submitting" ? "Submitting verification…" : "Verify CCTP Bridge V1"}</button>{bridgeVerifyState === "submitted" && <div className="notice success">✓ {bridgeVerifyMessage}</div>}<a className="linkButton" href={explorerAddress(bridgeAddress)} target="_blank" rel="noreferrer">Open bridge on Arc Explorer ↗</a></section>}
+    <section className="card stepCard">
+      <div className="stepHead"><span className="stepNo">04</span><div><h2>Deploy Router V6</h2><p>Exactly one new contract deployment. All required V6 configuration is supplied in the constructor.</p></div></div>
+      {!routerAddress ? <button className="primary deploy" disabled={!isConnected || !correctOwner || !onArc || !pairAttester || !riskAccepted || deploying} onClick={deployV6}>{deploying ? "Deploying Router V6…" : "Deploy ScanArc Router V6"}</button> : <div className="notice success strong">✓ Router V6 deployed and its owner, attester, factory, version and direct-execution mode were validated on-chain.</div>}
+      {txHash && <a className="linkButton" href={explorerTx(txHash)} target="_blank" rel="noreferrer">View V6 deployment ↗</a>}
+    </section>
+
+    {routerAddress && <section className="card stepCard">
+      <div className="stepHead"><span className="stepNo">05</span><div><h2>Verify Router V6</h2><p>Publish the exact V6 Solidity source and exact constructor arguments to Blockscout.</p></div></div>
+      <div className="contractBox"><span>DEPLOYED ROUTER V6</span><strong>{routerAddress}</strong></div>
+      <div className="verifyMeta"><span>{scanArcV6CompilerVersion}</span><span>Optimizer 200</span><span>viaIR</span><span>EIP-712 v6</span></div>
+      <button className="secondary" disabled={verifyState === "submitting"} onClick={verifyV6}>{verifyState === "submitting" ? "Submitting verification…" : "Verify Router V6"}</button>
+      {verifyState === "submitted" && <div className="notice success">✓ {verifyMessage}</div>}
+      <a className="linkButton" href={explorerAddress(routerAddress)} target="_blank" rel="noreferrer">Open V6 on Arc Explorer ↗</a>
+    </section>}
 
     {(error || connectError) && <section className="card error"><b>Stopped safely</b><p>{error ?? connectError?.message}</p></section>}
-    {bridgeAddress && <button className="ghost reset" onClick={clearSavedBridge}>Clear saved bridge deployment from this browser</button>}
-    <footer>This deploys only the Arc source adapter. Supporting fee-enforced bridging initiated from another source chain requires the same adapter to exist on that source chain; this Arc deployment alone does not create those additional source-chain contracts.</footer>
+    {routerAddress && <button className="ghost reset" onClick={clearSavedV6}>Clear saved V6 deployment from this browser</button>}
+
+    <footer>After V6 is deployed, update ScanArc's attestation request to use the V6 address and EIP-712 version 6. Canonical pre-graduation buys/sells must still be sent directly from the user's wallet to the canonical Arcfun curve; graduated tokens continue through the existing Arc-Wide Router V1.</footer>
   </main>;
 }
