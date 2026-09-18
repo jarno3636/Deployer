@@ -31,6 +31,14 @@ fs.writeFileSync(path.join(root, 'artifacts', 'ScanArcUniversalRouterV1.standard
 fs.writeFileSync(path.join(root, 'lib', 'scanarc-router-verification.generated.ts'), `// AUTO-GENERATED. Do not edit.\nexport const standardJsonInput = ${JSON.stringify(JSON.stringify(input))} as const;\n`);
 console.log(`${name}: ${artifact.evm.bytecode.object.length / 2} creation bytes; ${solc.version()}`);
 
+// V6 is the only new ScanArc router deployment. Compile it as part of the existing
+// prebuild so a clean Vercel clone always has deterministic deploy/verification artifacts.
+const v6Compiler = path.join(root, 'scripts', 'compile-scanarc-v6.mjs');
+if (fs.existsSync(v6Compiler)) {
+  const { execFileSync } = await import('node:child_process');
+  execFileSync(process.execPath, [v6Compiler], { cwd: root, stdio: 'inherit' });
+}
+
 // Bridge artifacts are required by the deployer UI and verification route.
 // Compile them here as part of compile:scanarc so clean Vercel builds remain
 // deterministic even when prebuild only invokes `npm run compile:scanarc`.
