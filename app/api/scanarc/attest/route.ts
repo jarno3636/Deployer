@@ -20,7 +20,7 @@ export async function POST(req: NextRequest) {
     const blockscoutKey = process.env.BLOCKSCOUT_API_KEY;
     if (!blockscoutKey) return NextResponse.json({ error: "BLOCKSCOUT_API_KEY is missing in Vercel." }, { status: 500 });
     const { token, curve, router } = await req.json();
-    if (!isAddress(router)) return NextResponse.json({ error: "A valid V5 router address is required." }, { status: 400 });
+    if (!isAddress(router)) return NextResponse.json({ error: "A valid V6 router address is required." }, { status: 400 });
 
     const proof = await proveArcfunPair(String(token ?? ""), String(curve ?? ""), blockscoutKey);
     const account = signer();
@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
     const verifyingContract = getAddress(router);
 
     const signature = await account.signTypedData({
-      domain: { name: "ScanArcRouter", version: "5", chainId: CHAIN_ID, verifyingContract },
+      domain: { name: "ScanArcRouter", version: "6", chainId: CHAIN_ID, verifyingContract },
       types: {
         PairAuthorization: [
           { name: "token", type: "address" },
