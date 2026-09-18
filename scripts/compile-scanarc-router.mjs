@@ -47,3 +47,11 @@ if (fs.existsSync(bridgeCompiler)) {
   const { execFileSync } = await import('node:child_process');
   execFileSync(process.execPath, [bridgeCompiler], { cwd: root, stdio: 'inherit' });
 }
+// CCTP Bridge V2 is the only new USDC bridge deployment. Generate its deploy and
+// verification artifacts during the normal prebuild without changing any existing deployment.
+const bridgeV2Compiler = path.join(root, 'scripts', 'compile-scanarc-bridge-v2.mjs');
+if (fs.existsSync(bridgeV2Compiler)) {
+  const { execFileSync } = await import('node:child_process');
+  execFileSync(process.execPath, [bridgeV2Compiler], { cwd: root, stdio: 'inherit' });
+}
+
