@@ -1,0 +1,18 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import solc from 'solc';
+const root=process.cwd();
+const unit='contracts/ScanArcUniversalRouterV2.sol';
+const name='ScanArcUniversalRouterV2';
+const source=fs.readFileSync(path.join(root,unit),'utf8');
+const input={language:'Solidity',sources:{[unit]:{content:source}},settings:{viaIR:true,optimizer:{enabled:true,runs:200},outputSelection:{'*':{'*':['abi','evm.bytecode.object','metadata']}}}};
+const output=JSON.parse(solc.compile(JSON.stringify(input)));
+for(const item of output.errors??[]) console[item.severity==='error'?'error':'warn'](item.formattedMessage);
+if((output.errors??[]).some(e=>e.severity==='error')) process.exit(1);
+const a=output.contracts?.[unit]?.[name]; if(!a?.evm?.bytecode?.object) throw new Error('Missing V2 artifact');
+fs.mkdirSync(path.join(root,'lib'),{recursive:true}); fs.mkdirSync(path.join(root,'artifacts'),{recursive:true});
+fs.writeFileSync(path.join(root,'lib','scanarc-universal-v2.generated.ts'),`// AUTO-GENERATED. Do not edit.\nexport const universalV2Abi = ${JSON.stringify(a.abi,null,2)} as const;\nexport const universalV2Bytecode = ${JSON.stringify('0x'+a.evm.bytecode.object)} as \`0x\${string}\`;\nexport const universalV2CompilerVersion = ${JSON.stringify(solc.version())} as const;\n`);
+fs.writeFileSync(path.join(root,'lib','scanarc-universal-v2-verification.generated.ts'),`// AUTO-GENERATED. Do not edit.\nexport const universalV2StandardJsonInput = ${JSON.stringify(JSON.stringify(input))} as const;\n`);
+fs.writeFileSync(path.join(root,'artifacts','ScanArcUniversalRouterV2.abi.json'),JSON.stringify(a.abi,null,2));
+fs.writeFileSync(path.join(root,'artifacts','ScanArcUniversalRouterV2.bin'),a.evm.bytecode.object);
+console.log(`${name}: ${a.evm.bytecode.object.length/2} creation bytes; ${solc.version()}`);

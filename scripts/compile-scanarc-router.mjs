@@ -55,3 +55,10 @@ if (fs.existsSync(bridgeV2Compiler)) {
   execFileSync(process.execPath, [bridgeV2Compiler], { cwd: root, stdio: 'inherit' });
 }
 
+
+// Universal Buy Router V2 is the current Arc-wide buy deployment.
+const universalV2Compiler = path.join(root, 'scripts', 'compile-scanarc-universal-v2.mjs');
+if (fs.existsSync(universalV2Compiler)) {
+  const { execFileSync } = await import('node:child_process');
+  execFileSync(process.execPath, [universalV2Compiler], { cwd: root, stdio: 'inherit' });
+}
