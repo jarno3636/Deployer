@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAddress } from "viem";
-import { standardJsonInput } from "../../../../lib/scanarc-router-verification.generated";
+import { universalV2StandardJsonInput as standardJsonInput } from "../../../../lib/scanarc-universal-v2-verification.generated";
 
 export const runtime = "nodejs";
 const CHAIN_ID = 5042;
@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
       action: "verifysourcecode",
       codeformat: "solidity-standard-json-input",
       contractaddress: address,
-      contractname: "contracts/ScanArcUniversalRouterV1.sol:ScanArcUniversalRouterV1",
+      contractname: "contracts/ScanArcUniversalRouterV2.sol:ScanArcUniversalRouterV2",
       compilerversion: COMPILER,
       sourceCode: standardJsonInput,
       constructorArguments: String(constructorArguments).replace(/^0x/, ""),
