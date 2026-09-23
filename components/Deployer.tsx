@@ -5,7 +5,7 @@ import { encodeAbiParameters, encodeDeployData, getAddress, getContractAddress, 
 import { useAccount, useConnect, useDisconnect, usePublicClient, useSwitchChain, useWalletClient } from "wagmi";
 import { arc, ARC_RPC_URLS } from "../lib/arc";
 import { scanArcV6Abi, scanArcV6Bytecode, scanArcV6CompilerVersion } from "../lib/scanarc-v6.generated";
-import { routerAbi, routerBytecode, compilerVersion as universalCompilerVersion } from "../lib/scanarc-router.generated";
+import { universalV2Abi as routerAbi, universalV2Bytecode as routerBytecode, universalV2CompilerVersion as universalCompilerVersion } from "../lib/scanarc-universal-v2.generated";
 
 const OWNER = getAddress("0x25BE27a17580F59206061B8823E3c0FbC1F7c52E");
 const ARCFUN_FACTORY = getAddress("0xBBf81Fd835B471C86d094eAaD35BB10068a987f8");
@@ -13,9 +13,9 @@ const LEGACY_V5 = getAddress("0x2E42f2daE317be31F8859ff000efaFD67dbb245F");
 const EXISTING_ARC_WIDE_ROUTER = getAddress("0x303c8889930187a7b11280292055dd1364552d29");
 const EXISTING_CCTP_BRIDGE = getAddress("0x777Fa929eA77a42aF8cb974d6C3e013D79cc1cfD");
 const V6_STORAGE_KEY = "scanarc-router-v6:arc-mainnet";
-const UNIVERSAL_STORAGE_KEY = "scanarc-universal-router-v1:arc-mainnet";
+const UNIVERSAL_STORAGE_KEY = "scanarc-universal-router-v2:arc-mainnet";
 const ARC_USDC = getAddress("0x3600000000000000000000000000000000000000");
-const UNISWAP_UNIVERSAL_ROUTER = getAddress("0x4fcA4a51Ab4F23A7447b3284fBd7D73289A89Fb1");
+const UNISWAP_UNIVERSAL_ROUTER = getAddress("0x8702463e73f74d0b6765aBceb314Ef07aCb92650");
 const PERMIT2 = getAddress("0x000000000022D473030F116dDEE9F6B43aC78BA3");
 
 function sleep(ms: number) { return new Promise((resolve) => setTimeout(resolve, ms)); }
@@ -239,7 +239,7 @@ export function Deployer() {
       const hash = await walletClient.sendTransaction({ account: address, chain: arc, data, gas: 2_500_000n });
       setUniversalTxHash(hash);
       const receipt = await publicClient.waitForTransactionReceipt({ hash });
-      if (receipt.status !== "success") throw new Error("ScanArc Universal Router V1 deployment reverted.");
+      if (receipt.status !== "success") throw new Error("ScanArc Universal Router V2 deployment reverted.");
       const deployed = receipt.contractAddress ?? predictedAddress;
       if (!(await waitForCode(deployed))) throw new Error("Universal Router bytecode was not found after confirmation.");
       await validateUniversal(deployed);
@@ -253,7 +253,7 @@ export function Deployer() {
   async function verifyUniversal() {
     setError(null); setUniversalVerifyState("submitting"); setUniversalVerifyMessage(null);
     try {
-      if (!universalAddress) throw new Error("Deploy Universal Router V1 first.");
+      if (!universalAddress) throw new Error("Deploy Universal Router V2 first.");
       const encoded = encodeAbiParameters(
         [{ type: "address" }, { type: "address" }, { type: "address" }, { type: "address" }, { type: "address" }],
         universalConstructorArgs() as any,
@@ -285,7 +285,7 @@ export function Deployer() {
     <header className="hero">
       <div className="brandRow"><div className="mark">A</div><div><div className="eyebrow">SCANARC · ARC MAINNET</div><div className="networkPill"><i /> Arc 5042</div></div></div>
       <h1>ScanArc Deployment Center</h1>
-      <p>Deploy Router V6 for canonical Arcfun curves and Universal Router V1 for one-tap Arc market buys with ScanArc's 0.25% execution fee.</p>
+      <p>Deploy Router V6 for canonical Arcfun curves and Universal Router V2 for one-tap Arc market buys with ScanArc's 0.25% execution fee.</p>
     </header>
 
     <section className="statusGrid">
@@ -348,23 +348,23 @@ export function Deployer() {
       <div className="stepHead"><span className="stepNo">06</span><div><h2>Universal Buy Router</h2><p>Deploy the Arc-wide execution adapter that lets ScanArc turn a token selection into a simple Buy action for supported Uniswap v4 markets.</p></div></div>
       <div className="details">
         <div><span>Arc USDC</span><code>{ARC_USDC}</code></div>
-        <div><span>Uniswap Universal Router</span><code>{UNISWAP_UNIVERSAL_ROUTER}</code></div>
+        <div><span>Uniswap Universal Router 2.1.2</span><code>{UNISWAP_UNIVERSAL_ROUTER}</code></div>
         <div><span>Permit2</span><code>{PERMIT2}</code></div>
         <div><span>ScanArc fee</span><strong>0.25% · 25 bps</strong></div>
         <div><span>Fee recipient</span><code>{OWNER}</code></div>
         <div><span>Route scope</span><strong>USDC ↔ supported Arc v4 markets</strong></div>
       </div>
-      <div className="notice">This is additive. It does not replace Router V6. V6 handles canonical pre-graduation Arcfun authorization; Universal Router V1 expands executable Arc market coverage.</div>
-      <label className="check"><input type="checkbox" checked={universalRiskAccepted} onChange={(e) => setUniversalRiskAccepted(e.target.checked)} /><span>I confirm these immutable Arc USDC, Uniswap Universal Router, Permit2, owner and fee-recipient values. The contract charges 0.25% and only executes its fixed Uniswap v4 path.</span></label>
-      {!universalAddress ? <button className="primary deploy" disabled={!isConnected || !correctOwner || !onArc || !universalRiskAccepted || universalDeploying} onClick={deployUniversal}>{universalDeploying ? "Deploying Universal Buy Router…" : "Deploy Universal Buy Router"}</button> : <div className="notice success strong">✓ Universal Buy Router deployed and its owner, Arc USDC, Universal Router, Permit2, fee recipient and 25 bps fee were validated on-chain.</div>}
+      <div className="notice">This is additive. It does not replace Router V6. V2 starts on Uniswap Universal Router 2.1.2 and lets the ScanArc owner update the underlying Uniswap router later without redeploying this contract.</div>
+      <label className="check"><input type="checkbox" checked={universalRiskAccepted} onChange={(e) => setUniversalRiskAccepted(e.target.checked)} /><span>I confirm Arc USDC, Permit2, owner and fee-recipient values. The contract starts on Uniswap Universal Router 2.1.2; the owner can later update only the approved Universal Router address without redeploying ScanArc. The fee remains 0.25%.</span></label>
+      {!universalAddress ? <button className="primary deploy" disabled={!isConnected || !correctOwner || !onArc || !universalRiskAccepted || universalDeploying} onClick={deployUniversal}>{universalDeploying ? "Deploying Universal Buy Router…" : "Deploy Universal Buy Router"}</button> : <div className="notice success strong">✓ Universal Buy Router V2 deployed and its owner, Arc USDC, current Uniswap Router, Permit2, fee recipient and 25 bps fee were validated on-chain.</div>}
       {universalTxHash && <a className="linkButton" href={explorerTx(universalTxHash)} target="_blank" rel="noreferrer">View Universal deployment ↗</a>}
     </section>
 
     {universalAddress && <section className="card stepCard">
-      <div className="stepHead"><span className="stepNo">07</span><div><h2>Verify Universal Buy Router</h2><p>Publish the exact Universal Router V1 source and constructor arguments to Blockscout.</p></div></div>
-      <div className="contractBox"><span>DEPLOYED UNIVERSAL ROUTER V1</span><strong>{universalAddress}</strong></div>
+      <div className="stepHead"><span className="stepNo">07</span><div><h2>Verify Universal Buy Router</h2><p>Publish the exact Universal Router V2 source and constructor arguments to Blockscout.</p></div></div>
+      <div className="contractBox"><span>DEPLOYED UNIVERSAL ROUTER V2</span><strong>{universalAddress}</strong></div>
       <div className="verifyMeta"><span>{universalCompilerVersion}</span><span>Optimizer 200</span><span>viaIR</span><span>Fee 25 bps</span></div>
-      <button className="secondary" disabled={universalVerifyState === "submitting"} onClick={verifyUniversal}>{universalVerifyState === "submitting" ? "Submitting verification…" : "Verify Universal Router V1"}</button>
+      <button className="secondary" disabled={universalVerifyState === "submitting"} onClick={verifyUniversal}>{universalVerifyState === "submitting" ? "Submitting verification…" : "Verify Universal Router V2"}</button>
       {universalVerifyState === "submitted" && <div className="notice success">✓ {universalVerifyMessage}</div>}
       <a className="linkButton" href={explorerAddress(universalAddress)} target="_blank" rel="noreferrer">Open Universal Router on Arc Explorer ↗</a>
       <button className="ghost reset" onClick={clearSavedUniversal}>Clear saved Universal deployment from this browser</button>
@@ -373,6 +373,6 @@ export function Deployer() {
     {(error || connectError) && <section className="card error"><b>Stopped safely</b><p>{error ?? connectError?.message}</p></section>}
     {routerAddress && <button className="ghost reset" onClick={clearSavedV6}>Clear saved V6 deployment from this browser</button>}
 
-    <footer>After deployment, wire ScanArc token Buy actions to the route engine: canonical pre-graduation Arcfun trades remain direct through V6 authorization, while supported Arc v4 USDC markets can execute through Universal Router V1. Crosschain CCTP/Gateway routing remains a separate adapter step and is not silently enabled by this deployment.</footer>
+    <footer>After deployment, wire ScanArc token Buy actions to the route engine: canonical pre-graduation Arcfun trades remain direct through V6 authorization, while supported Arc v4 USDC markets can execute through Universal Router V2. Crosschain CCTP/Gateway routing remains a separate adapter step and is not silently enabled by this deployment.</footer>
   </main>;
 }
