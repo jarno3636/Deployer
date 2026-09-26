@@ -10,7 +10,8 @@
     "prebuild": "npm run compile:scanarc && npm run compile:indexio",
     "compile:scanarc": "node scripts/compile-scanarc-router.mjs",
     "compile:bridge": "node scripts/compile-scanarc-bridge.mjs",
-    "compile:indexio": "node scripts/compile-indexio.mjs"
+    "compile:indexio": "node scripts/compile-indexio.mjs && node scripts/compile-indexio-adapter.mjs",
+    "compile:indexio-adapter": "node scripts/compile-indexio-adapter.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
