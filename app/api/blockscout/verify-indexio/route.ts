@@ -12,6 +12,7 @@ const BASE_V2 = 'https://base.blockscout.com/api/v2';
 
 const CONTRACTS = {
   registry: 'contracts/indexio/IndexioAssetRegistry.sol:IndexioAssetRegistry',
+  vaultDeployer: 'contracts/indexio/IndexioVaultDeployer.sol:IndexioVaultDeployer',
   factory: 'contracts/indexio/IndexioFactory.sol:IndexioFactory',
   executionRouter: 'contracts/indexio/IndexioExecutionRouter.sol:IndexioExecutionRouter',
   rebalanceRouter: 'contracts/indexio/IndexioRebalanceRouter.sol:IndexioRebalanceRouter',
@@ -101,7 +102,7 @@ export async function POST(req: NextRequest) {
   try {
     const key = process.env.BLOCKSCOUT_API_KEY || '';
     const { kind, address, constructorArguments = '', mode = 'verify' } = await req.json();
-    if (!(kind in CONTRACTS)) return NextResponse.json({ error: 'Unknown Indexio contract kind.' }, { status: 400 });
+    if (typeof kind !== 'string' || !(kind in CONTRACTS)) return NextResponse.json({ error: 'Unknown Indexio contract kind.' }, { status: 400 });
     if (!isAddress(address)) return NextResponse.json({ error: 'Valid deployed contract address required.' }, { status: 400 });
 
     if (await isVerified(address, key)) {
