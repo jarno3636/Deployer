@@ -8,6 +8,7 @@ import {
   getAddress,
   getContractAddress,
   isAddress,
+  formatEther,
 } from 'viem';
 import { base } from 'viem/chains';
 import {
@@ -28,6 +29,7 @@ import {
   indexioRebalanceRouterAbi,
   indexioRebalanceRouterBytecode,
   indexioCompilerVersion,
+  indexioDeploymentMeta,
 } from '../lib/indexio.generated';
 
 const BASE_USDC = getAddress('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
@@ -39,6 +41,17 @@ type VerifyStatus = 'idle' | 'submitting' | 'pending' | 'verified' | 'error';
 type AddressState = Partial<Record<Kind, `0x${string}`>>;
 type HashState = Partial<Record<Kind, `0x${string}`>>;
 type VerifyState = Record<Kind, VerifyStatus>;
+type PreflightStatus = 'idle' | 'checking' | 'pass' | 'fail';
+type PreflightResult = {
+  status: PreflightStatus;
+  gas?: string;
+  gasLimit?: string;
+  gasPriceGwei?: string;
+  executionEth?: string;
+  initCodeBytes?: number;
+  runtimeBytes?: number;
+  message?: string;
+};
 
 type SavedState = {
   owner?: string;
@@ -104,6 +117,7 @@ export function IndexioDeployer() {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [recoveryInput, setRecoveryInput] = useState<Partial<Record<Kind, string>>>({});
+  const [preflight, setPreflight] = useState<Partial<Record<Kind, PreflightResult>>>({});
   const autoRecoveryAttempted = useRef<Partial<Record<Kind, boolean>>>({});
 
   const onBase = chainId === base.id;
@@ -212,10 +226,10 @@ export function IndexioDeployer() {
   }
 
   function artifact(kind: Kind) {
-    if (kind === 'registry') return { abi: indexioAssetRegistryAbi, bytecode: indexioAssetRegistryBytecode };
-    if (kind === 'factory') return { abi: indexioFactoryAbi, bytecode: indexioFactoryBytecode };
-    if (kind === 'executionRouter') return { abi: indexioExecutionRouterAbi, bytecode: indexioExecutionRouterBytecode };
-    return { abi: indexioRebalanceRouterAbi, bytecode: indexioRebalanceRouterBytecode };
+    if (kind === 'registry') return { abi: indexioAssetRegistryAbi, bytecode: indexioAssetRegistryBytecode, meta: indexioDeploymentMeta.assetRegistry };
+    if (kind === 'factory') return { abi: indexioFactoryAbi, bytecode: indexioFactoryBytecode, meta: indexioDeploymentMeta.factory };
+    if (kind === 'executionRouter') return { abi: indexioExecutionRouterAbi, bytecode: indexioExecutionRouterBytecode, meta: indexioDeploymentMeta.executionRouter };
+    return { abi: indexioRebalanceRouterAbi, bytecode: indexioRebalanceRouterBytecode, meta: indexioDeploymentMeta.rebalanceRouter };
   }
 
   function encodedConstructor(kind: Kind) {
@@ -233,6 +247,110 @@ export function IndexioDeployer() {
       [{ type: 'address' }, { type: 'address' }],
       args as readonly [`0x${string}`, `0x${string}`],
     );
+  }
+
+  function errorText(cause: unknown) {
+    const seen = new Set<unknown>();
+    let cursor: any = cause;
+    const parts: string[] = [];
+    for (let i = 0; i < 5 && cursor && !seen.has(cursor); i += 1) {
+      seen.add(cursor);
+      for (const key of ['shortMessage', 'details', 'message']) {
+        const value = cursor?.[key];
+        if (typeof value === 'string' && value.trim() && !parts.includes(value.trim())) parts.push(value.trim());
+      }
+      cursor = cursor?.cause;
+    }
+    return parts.join(' — ') || 'Unknown RPC error.';
+  }
+
+  async function verificationConstructor(kind: Kind, target: `0x${string}`) {
+    if (!publicClient) throw new Error('Base RPC client is not ready.');
+    const read = (abi: readonly unknown[], functionName: string) => publicClient.readContract({
+      address: target,
+      abi: abi as any,
+      functionName: functionName as any,
+    });
+
+    if (kind === 'registry') {
+      const deployedOwner = getAddress(String(await read(indexioAssetRegistryAbi, 'owner')));
+      return encodeAbiParameters([{ type: 'address' }], [deployedOwner]);
+    }
+    if (kind === 'factory') {
+      const [deployedOwner, registry, settlement, feeTreasury] = await Promise.all([
+        read(indexioFactoryAbi, 'owner'), read(indexioFactoryAbi, 'registry'),
+        read(indexioFactoryAbi, 'settlementToken'), read(indexioFactoryAbi, 'feeTreasury'),
+      ]);
+      return encodeAbiParameters(
+        [{ type: 'address' }, { type: 'address' }, { type: 'address' }, { type: 'address' }],
+        [getAddress(String(deployedOwner)), getAddress(String(registry)), getAddress(String(settlement)), getAddress(String(feeTreasury))],
+      );
+    }
+    if (kind === 'executionRouter') {
+      const [deployedOwner, factory, settlement] = await Promise.all([
+        read(indexioExecutionRouterAbi, 'owner'), read(indexioExecutionRouterAbi, 'factory'), read(indexioExecutionRouterAbi, 'settlementToken'),
+      ]);
+      return encodeAbiParameters(
+        [{ type: 'address' }, { type: 'address' }, { type: 'address' }],
+        [getAddress(String(deployedOwner)), getAddress(String(factory)), getAddress(String(settlement))],
+      );
+    }
+    const [deployedOwner, factory] = await Promise.all([
+      read(indexioRebalanceRouterAbi, 'owner'), read(indexioRebalanceRouterAbi, 'factory'),
+    ]);
+    return encodeAbiParameters(
+      [{ type: 'address' }, { type: 'address' }],
+      [getAddress(String(deployedOwner)), getAddress(String(factory))],
+    );
+  }
+
+  async function runDeploymentPreflight(kind: Kind) {
+    const { account } = requireReady();
+    const { abi, bytecode, meta } = artifact(kind);
+    const args = constructorArgs(kind);
+    const data = encodeDeployData({ abi: abi as any, bytecode, args: args as any });
+    const initCodeBytes = (data.length - 2) / 2;
+    const runtimeBytes = Number(meta.runtimeBytes);
+
+    setPreflight((x) => ({ ...x, [kind]: { status: 'checking', initCodeBytes, runtimeBytes, message: 'Simulating deployment against Base mainnet…' } }));
+
+    // Hard EVM limits. If either is exceeded, no gas setting or wallet can make the deployment valid.
+    if (initCodeBytes > 49_152) {
+      const message = `${LABELS[kind]} init code is ${initCodeBytes.toLocaleString()} bytes, above the EVM 49,152-byte creation limit. The contract architecture must be reduced before deployment.`;
+      setPreflight((x) => ({ ...x, [kind]: { status: 'fail', initCodeBytes, runtimeBytes, message } }));
+      throw new Error(message);
+    }
+    if (runtimeBytes > 24_576) {
+      const message = `${LABELS[kind]} runtime is ${runtimeBytes.toLocaleString()} bytes, above the EVM 24,576-byte deployed-code limit. This deployment cannot succeed as currently compiled.`;
+      setPreflight((x) => ({ ...x, [kind]: { status: 'fail', initCodeBytes, runtimeBytes, message } }));
+      throw new Error(message);
+    }
+
+    try {
+      // eth_estimateGas executes the creation code without publishing a transaction. This catches
+      // constructor reverts, code-size limits and malformed deployment data before MetaMask opens.
+      const gas = await publicClient!.estimateGas({ account, data });
+      const gasPrice = await publicClient!.getGasPrice();
+      const gasLimit = gas + (gas / 5n) + 25_000n; // conservative 20% headroom; wallet still shows the final fee.
+      const executionWei = gasLimit * gasPrice;
+      const result: PreflightResult = {
+        status: 'pass',
+        gas: gas.toString(),
+        gasLimit: gasLimit.toString(),
+        gasPriceGwei: (Number(gasPrice) / 1e9).toFixed(6),
+        executionEth: formatEther(executionWei),
+        initCodeBytes,
+        runtimeBytes,
+        message: 'Base simulation passed. Wallet can now receive the deployment transaction.',
+      };
+      setPreflight((x) => ({ ...x, [kind]: result }));
+      return { data, gas, gasLimit };
+    } catch (cause) {
+      const detail = errorText(cause);
+      const message = `${LABELS[kind]} preflight failed on Base. No wallet transaction was sent. ${detail}`;
+      setPreflight((x) => ({ ...x, [kind]: { status: 'fail', initCodeBytes, runtimeBytes, message } }));
+      throw new Error(message);
+    }
   }
 
   async function validate(kind: Kind, target: `0x${string}`) {
@@ -281,7 +399,7 @@ export function IndexioDeployer() {
     setVerify((v) => ({ ...v, [kind]: 'submitting' }));
     setVerifyMessage((m) => ({ ...m, [kind]: mode === 'check' ? 'Checking Blockscout…' : 'Submitting exact source to Blockscout…' }));
     try {
-      const constructorArguments = encodedConstructor(kind).slice(2);
+      const constructorArguments = (await verificationConstructor(kind, target)).slice(2);
       const res = await fetch('/api/blockscout/verify-indexio', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -350,7 +468,7 @@ export function IndexioDeployer() {
   }
 
   async function submitAndPollVerification(kind: Kind, deployed: `0x${string}`) {
-    const constructorArguments = encodedConstructor(kind).slice(2);
+    const constructorArguments = (await verificationConstructor(kind, deployed)).slice(2);
     setVerify((v) => ({ ...v, [kind]: 'submitting' }));
     setVerifyMessage((m) => ({ ...m, [kind]: 'Submitting exact source to Base Blockscout…' }));
 
@@ -418,6 +536,38 @@ export function IndexioDeployer() {
     }
   }, [publicClient, owner, treasury, addresses, hashes]);
 
+  useEffect(() => {
+    if (!publicClient || !addresses.factory) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        if (addresses.executionRouter) {
+          const [pending, active] = await Promise.all([
+            publicClient.readContract({ address: addresses.factory!, abi: indexioFactoryAbi, functionName: 'pendingExecutionRouterValidAt', args: [addresses.executionRouter] }),
+            publicClient.readContract({ address: addresses.factory!, abi: indexioFactoryAbi, functionName: 'isExecutionRouter', args: [addresses.executionRouter] }),
+          ]);
+          if (!cancelled) {
+            if (BigInt(pending as bigint) > 0n) setExecutionValidAt(String(pending));
+            setExecutionActive(Boolean(active));
+          }
+        }
+        if (addresses.rebalanceRouter) {
+          const [pending, active] = await Promise.all([
+            publicClient.readContract({ address: addresses.factory!, abi: indexioFactoryAbi, functionName: 'pendingRebalanceRouterValidAt', args: [addresses.rebalanceRouter] }),
+            publicClient.readContract({ address: addresses.factory!, abi: indexioFactoryAbi, functionName: 'isRebalanceRouter', args: [addresses.rebalanceRouter] }),
+          ]);
+          if (!cancelled) {
+            if (BigInt(pending as bigint) > 0n) setRebalanceValidAt(String(pending));
+            setRebalanceActive(Boolean(active));
+          }
+        }
+      } catch {
+        // Governance recovery is read-only convenience. Explicit actions still preflight on-chain.
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [publicClient, addresses.factory, addresses.executionRouter, addresses.rebalanceRouter]);
+
   async function deploy(kind: Kind) {
     setError(null); setNotice(null);
     try {
@@ -428,12 +578,10 @@ export function IndexioDeployer() {
       if (kind === 'rebalanceRouter' && verify.executionRouter !== 'verified') throw new Error('Execution Router must be verified before Rebalance Router deployment.');
 
       setBusy(`deploy:${kind}`);
-      const { abi, bytecode } = artifact(kind);
-      const args = constructorArgs(kind);
-      const data = encodeDeployData({ abi: abi as any, bytecode, args: args as any });
+      const { data, gasLimit } = await runDeploymentPreflight(kind);
       const nonce = await publicClient!.getTransactionCount({ address: account, blockTag: 'pending' });
       const predicted = getContractAddress({ from: account, nonce: BigInt(nonce) });
-      const hash = await walletClient!.sendTransaction({ account, chain: base, data });
+      const hash = await walletClient!.sendTransaction({ account, chain: base, data, gas: gasLimit });
       setHashes((x) => ({ ...x, [kind]: hash }));
       const receipt = await publicClient!.waitForTransactionReceipt({ hash });
       if (receipt.status !== 'success') throw new Error(`${LABELS[kind]} deployment reverted.`);
@@ -510,7 +658,14 @@ export function IndexioDeployer() {
         functionName: functionName as any,
         args: [target] as any,
       });
-      const hash = await walletClient!.sendTransaction({ account, chain: base, to: addresses.factory, data });
+      let governanceGas: bigint;
+      try {
+        governanceGas = await publicClient!.estimateGas({ account, to: addresses.factory, data });
+      } catch (cause) {
+        throw new Error(`Governance preflight failed. No wallet transaction was sent. ${errorText(cause)}`);
+      }
+      const governanceGasLimit = governanceGas + (governanceGas / 5n) + 10_000n;
+      const hash = await walletClient!.sendTransaction({ account, chain: base, to: addresses.factory, data, gas: governanceGasLimit });
       const receipt = await publicClient!.waitForTransactionReceipt({ hash });
       if (receipt.status !== 'success') throw new Error(`${functionName} reverted.`);
 
@@ -572,7 +727,15 @@ export function IndexioDeployer() {
         {hashes[kind] && <div><span>Deploy tx</span><a href={explorerTx(hashes[kind]!)} target="_blank" rel="noreferrer">Open transaction ↗</a></div>}
       </div>
       {!target && <>
-        <button className="primary deploy" disabled={!unlocked || !!busy} onClick={() => deploy(kind)}>{busy === `deploy:${kind}` ? 'Deploying…' : `Deploy + validate ${LABELS[kind]}`}</button>
+        {unlocked && <button className="secondary" disabled={!!busy} onClick={async () => { setError(null); try { setBusy(`preflight:${kind}`); await runDeploymentPreflight(kind); } catch (cause) { setError(cause instanceof Error ? cause.message : 'Deployment preflight failed.'); } finally { setBusy(null); } }}>{busy === `preflight:${kind}` ? 'Checking Base simulation…' : 'Check deployment preflight'}</button>}
+        {preflight[kind] && <div className={`notice ${preflight[kind]?.status === 'pass' ? 'success' : preflight[kind]?.status === 'fail' ? 'danger' : ''}`} style={{ marginTop: 10 }}>
+          <strong>Preflight: {preflight[kind]?.status?.toUpperCase()}</strong><br />
+          {preflight[kind]?.initCodeBytes !== undefined && <>Init code: {preflight[kind]?.initCodeBytes?.toLocaleString()} bytes · Runtime: {preflight[kind]?.runtimeBytes?.toLocaleString()} bytes<br /></>}
+          {preflight[kind]?.gas && <>Estimated gas: {Number(preflight[kind]?.gas).toLocaleString()} · Suggested limit: {Number(preflight[kind]?.gasLimit).toLocaleString()}<br /></>}
+          {preflight[kind]?.executionEth && <>Approx. Base execution-gas ceiling: {preflight[kind]?.executionEth} ETH (wallet may also include Base/L1 data fees)<br /></>}
+          {preflight[kind]?.message}
+        </div>}
+        <button className="primary deploy" disabled={!unlocked || !!busy || preflight[kind]?.status === 'fail'} onClick={() => deploy(kind)}>{busy === `deploy:${kind}` ? 'Preflighting + deploying…' : `Deploy + validate ${LABELS[kind]}`}</button>
         <div className="notice strong" style={{ marginTop: 12 }}>
           <strong>Already deployed this contract?</strong> Recover the existing Base address instead of deploying again. Recovery is read-only until Blockscout verification and sends no deployment transaction.
           <label className="field" style={{ marginTop: 10 }}>EXISTING {LABELS[kind].toUpperCase()} ADDRESS
