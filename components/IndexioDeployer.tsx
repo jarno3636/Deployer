@@ -296,6 +296,68 @@ export function IndexioDeployer() {
     }
   }
 
+
+  function persistCoreDeployment(kind: Kind, deployed: `0x${string}`, hash: `0x${string}`) {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      const saved = raw ? JSON.parse(raw) as SavedState : {};
+      const next: SavedState = {
+        ...saved,
+        owner: ownerInput,
+        treasury: treasuryInput,
+        addresses: { ...(saved.addresses || {}), [kind]: deployed },
+        hashes: { ...(saved.hashes || {}), [kind]: hash },
+        verified: { ...(saved.verified || {}), [kind]: false },
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    } catch {
+      // Best-effort recovery state only. On-chain validation remains authoritative.
+    }
+  }
+
+  async function submitAndPollVerification(kind: Kind, deployed: `0x${string}`) {
+    const constructorArguments = encodedConstructor(kind).slice(2);
+    setVerify((v) => ({ ...v, [kind]: 'submitting' }));
+    setVerifyMessage((m) => ({ ...m, [kind]: 'Submitting exact source to Base Blockscout…' }));
+
+    const submit = await fetch('/api/blockscout/verify-indexio', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind, address: deployed, constructorArguments, mode: 'verify' }),
+    });
+    const submitted = await submit.json();
+    if (!submit.ok) throw new Error(submitted?.error || `${LABELS[kind]} verification failed.`);
+    if (submitted?.verified) {
+      setVerify((v) => ({ ...v, [kind]: 'verified' }));
+      setVerifyMessage((m) => ({ ...m, [kind]: submitted?.message || 'Verified on Base Blockscout.' }));
+      return true;
+    }
+
+    setVerify((v) => ({ ...v, [kind]: 'pending' }));
+    setVerifyMessage((m) => ({ ...m, [kind]: submitted?.message || 'Deployment is complete. Blockscout verification is pending; do not redeploy.' }));
+
+    // Blockscout often needs a few seconds to index freshly-created bytecode.
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await sleep(3000);
+      const check = await fetch('/api/blockscout/verify-indexio', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind, address: deployed, constructorArguments, mode: 'check' }),
+      });
+      const checked = await check.json();
+      if (!check.ok) continue;
+      if (checked?.verified) {
+        setVerify((v) => ({ ...v, [kind]: 'verified' }));
+        setVerifyMessage((m) => ({ ...m, [kind]: checked?.message || 'Verified on Base Blockscout.' }));
+        return true;
+      }
+    }
+
+    setVerify((v) => ({ ...v, [kind]: 'pending' }));
+    setVerifyMessage((m) => ({ ...m, [kind]: 'Contract is deployed and saved. Blockscout is still indexing it. Do NOT redeploy; use Check verification.' }));
+    return false;
+  }
+
   async function deploy(kind: Kind) {
     setError(null); setNotice(null);
     try {
@@ -315,26 +377,20 @@ export function IndexioDeployer() {
       setHashes((x) => ({ ...x, [kind]: hash }));
       const receipt = await publicClient!.waitForTransactionReceipt({ hash });
       if (receipt.status !== 'success') throw new Error(`${LABELS[kind]} deployment reverted.`);
-      const deployed = receipt.contractAddress ?? predicted;
+      const deployed = (receipt.contractAddress ?? predicted) as `0x${string}`;
       const code = await publicClient!.getBytecode({ address: deployed });
       if (!code || code === '0x') throw new Error(`${LABELS[kind]} bytecode was not found after deployment.`);
       await validate(kind, deployed);
-      setAddresses((x) => ({ ...x, [kind]: deployed }));
-      setNotice(`${LABELS[kind]} deployed and validated. Now verify it before continuing.`);
 
-      // Verification is off-chain and creates no wallet transaction.
+      // Persist the successful deployment BEFORE any off-chain verification call.
+      // A Blockscout delay/failure must never make the UI offer a duplicate deployment.
+      setAddresses((x) => ({ ...x, [kind]: deployed }));
+      persistCoreDeployment(kind, deployed, hash);
+      setNotice(`${LABELS[kind]} deployed and validated at ${deployed}. Verification is off-chain; do not redeploy this contract.`);
+
       await sleep(1200);
-      // State updates are async, so call the endpoint directly with the known deployed address.
-      const constructorArguments = encodedConstructor(kind).slice(2);
-      setVerify((v) => ({ ...v, [kind]: 'submitting' }));
-      const res = await fetch('/api/blockscout/verify-indexio', {
-        method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ kind, address: deployed, constructorArguments, mode: 'verify' }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || `${LABELS[kind]} verification failed.`);
-      setVerify((v) => ({ ...v, [kind]: json?.verified ? 'verified' : 'pending' }));
-      setVerifyMessage((m) => ({ ...m, [kind]: json?.message || 'Verification submitted.' }));
+      const verifiedNow = await submitAndPollVerification(kind, deployed);
+      if (verifiedNow) setNotice(`${LABELS[kind]} deployed, validated and verified. The next contract is now unlocked.`);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : `${LABELS[kind]} deployment failed.`);
     } finally {
@@ -436,8 +492,9 @@ export function IndexioDeployer() {
       {!target && <button className="primary deploy" disabled={!unlocked || !!busy} onClick={() => deploy(kind)}>{busy === `deploy:${kind}` ? 'Deploying…' : `Deploy + validate ${LABELS[kind]}`}</button>}
       {target && status !== 'verified' && <button className="secondary" disabled={status === 'submitting' || !!busy} onClick={() => checkVerification(kind)}>{status === 'submitting' ? 'Checking…' : 'Check verification'}</button>}
       {target && <a className="linkButton" href={explorerAddress(target)} target="_blank" rel="noreferrer">Open contract on Base Blockscout ↗</a>}
+      {target && status !== 'verified' && <div className="notice"><strong>Already deployed.</strong> Do not deploy this contract again. The next section unlocks automatically as soon as Blockscout reports this address verified.</div>}
       {verifyMessage[kind] && <div className={`notice ${status === 'verified' ? 'success' : status === 'error' ? 'danger' : ''}`}>{verifyMessage[kind]}</div>}
-      {!unlocked && !target && <div className="notice">Locked until the previous contract is deployed and verified.</div>}
+      {!unlocked && !target && <div className="notice">Locked until the previous contract is verified. If the previous card says DEPLOYED, do not redeploy it—wait for automatic verification or press Check verification.</div>}
     </section>;
   };
 
