@@ -1,5 +1,5 @@
-import { Deployer } from '../components/Deployer';
+import { IndexioDeployer } from '../components/IndexioDeployer';
 
 export default function Page() {
-  return <Deployer />;
+  return <IndexioDeployer />;
 }

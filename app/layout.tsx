@@ -3,8 +3,8 @@ import './globals.css';
 import { Providers } from './providers';
 
 export const metadata: Metadata = {
-  title: 'ScanArc Arc-Wide Router Deployer',
-  description: 'Guarded Arc mainnet deployment console for ScanArc Uniswap v4 coverage.',
+  title: 'Indexio V2.4 Base Deployment Center',
+  description: 'Wallet-signed Base mainnet deployment and governance console for Indexio V2.4.',
 };
 
 export const viewport: Viewport = {
