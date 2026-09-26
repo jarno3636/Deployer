@@ -464,6 +464,28 @@ export function IndexioDeployer() {
     catch (cause) { setError(cause instanceof Error ? cause.message : 'Verification check failed.'); }
   }
 
+  async function retryVerification(kind: Kind) {
+    setError(null);
+    setNotice(null);
+    const target = addresses[kind];
+    if (!target) return setError(`Recover or deploy ${LABELS[kind]} first.`);
+    setBusy(`verify:${kind}`);
+    try {
+      await validate(kind, target);
+      const verifiedNow = await submitAndPollVerification(kind, target);
+      if (verifiedNow) {
+        setNotice(`${LABELS[kind]} is verified on Base Blockscout. The next contract is now unlocked.`);
+      } else {
+        setNotice(`${LABELS[kind]} remains deployed at ${target}. Verification was resubmitted off-chain; no deployment transaction was sent.`);
+      }
+    } catch (cause) {
+      setVerify((v) => ({ ...v, [kind]: 'error' }));
+      setError(cause instanceof Error ? cause.message : 'Verification retry failed.');
+    } finally {
+      setBusy(null);
+    }
+  }
+
   async function governanceTx(functionName: 'proposeExecutionRouter' | 'proposeRebalanceRouter' | 'activateExecutionRouter' | 'activateRebalanceRouter') {
     setError(null); setNotice(null);
     try {
@@ -559,9 +581,12 @@ export function IndexioDeployer() {
           <button className="secondary" disabled={!!busy || !recoveryInput[kind]} onClick={() => recoverExisting(kind)}>{busy === `recover:${kind}` ? 'Recovering + validating…' : 'Use existing deployment'}</button>
         </div>
       </>}
-      {target && status !== 'verified' && <button className="secondary" disabled={status === 'submitting' || !!busy} onClick={() => checkVerification(kind)}>{status === 'submitting' ? 'Checking…' : 'Check verification'}</button>}
+      {target && status !== 'verified' && <div style={{ display: 'grid', gap: 10 }}>
+        <button className="primary" disabled={!!busy || status === 'submitting'} onClick={() => retryVerification(kind)}>{busy === `verify:${kind}` || status === 'submitting' ? 'Submitting verification…' : 'Retry verification'}</button>
+        <button className="secondary" disabled={!!busy || status === 'submitting'} onClick={() => checkVerification(kind)}>Check verification status</button>
+      </div>}
       {target && <a className="linkButton" href={explorerAddress(target)} target="_blank" rel="noreferrer">Open contract on Base Blockscout ↗</a>}
-      {target && status !== 'verified' && <div className="notice"><strong>Already deployed.</strong> Do not deploy this contract again. The next section unlocks automatically as soon as Blockscout reports this address verified.</div>}
+      {target && status !== 'verified' && <div className="notice"><strong>Already deployed.</strong> Do not deploy this contract again. <strong>Retry verification</strong> only resubmits source code to Blockscout; it does not send a blockchain transaction. The next section unlocks automatically after verification succeeds.</div>}
       {verifyMessage[kind] && <div className={`notice ${status === 'verified' ? 'success' : status === 'error' ? 'danger' : ''}`}>{verifyMessage[kind]}</div>}
       {!unlocked && !target && <div className="notice">Locked until the previous contract is verified. If the previous card says DEPLOYED, do not redeploy it—wait for automatic verification or press Check verification.</div>}
     </section>;
