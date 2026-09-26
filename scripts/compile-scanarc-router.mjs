@@ -62,12 +62,3 @@ if (fs.existsSync(universalV2Compiler)) {
   const { execFileSync } = await import('node:child_process');
   execFileSync(process.execPath, [universalV2Compiler], { cwd: root, stdio: 'inherit' });
 }
-
-// Indexio V2.4 deployer imports generated ABI/bytecode and verification modules.
-// Generate those artifacts during the existing compile:scanarc prebuild as well, so
-// a clean Vercel clone cannot reach `next build` before Indexio artifacts exist.
-const indexioCompiler = path.join(root, 'scripts', 'compile-indexio.mjs');
-if (fs.existsSync(indexioCompiler)) {
-  const { execFileSync } = await import('node:child_process');
-  execFileSync(process.execPath, [indexioCompiler], { cwd: root, stdio: 'inherit' });
-}
