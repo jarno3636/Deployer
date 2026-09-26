@@ -539,7 +539,7 @@ export function IndexioAdapterDeployer() {
       <section style={cardStyle}>
         <h2>4. Propose adapters on the existing core routers</h2>
         <p>This does not redeploy either router. It starts each router's existing 1-day ADAPTER_DELAY.</p>
-        <button style={buttonStyle} disabled={!!busy || !trustStatus.executionTrustActive || !trustStatus.rebalanceTrustActive || !isOwnerWallet} onClick={proposeCoreAdapters}>Propose both adapters on core routers</button>
+        <button style={buttonStyle} disabled={!!busy || !bothVerified || !isOwnerWallet} onClick={proposeCoreAdapters}>Propose both adapters on core routers</button>
         <div style={{ marginTop: 12, color: '#aab2bf' }}>
           <div>Execution core valid at: {fmtTime(trustStatus.executionCoreAt)}</div>
           <div>Rebalance core valid at: {fmtTime(trustStatus.rebalanceCoreAt)}</div>
