@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   encodeAbiParameters,
   encodeDeployData,
@@ -103,6 +103,8 @@ export function IndexioDeployer() {
   const [rebalanceActive, setRebalanceActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [recoveryInput, setRecoveryInput] = useState<Partial<Record<Kind, string>>>({});
+  const autoRecoveryAttempted = useRef<Partial<Record<Kind, boolean>>>({});
 
   const onBase = chainId === base.id;
   const owner = isAddress(ownerInput) ? getAddress(ownerInput) : null;
@@ -297,21 +299,53 @@ export function IndexioDeployer() {
   }
 
 
-  function persistCoreDeployment(kind: Kind, deployed: `0x${string}`, hash: `0x${string}`) {
+  function persistCoreDeployment(kind: Kind, deployed: `0x${string}`, hash?: `0x${string}`) {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       const saved = raw ? JSON.parse(raw) as SavedState : {};
+      const nextHashes = { ...(saved.hashes || {}) };
+      if (hash) nextHashes[kind] = hash;
       const next: SavedState = {
         ...saved,
         owner: ownerInput,
         treasury: treasuryInput,
         addresses: { ...(saved.addresses || {}), [kind]: deployed },
-        hashes: { ...(saved.hashes || {}), [kind]: hash },
+        hashes: nextHashes,
         verified: { ...(saved.verified || {}), [kind]: false },
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     } catch {
       // Best-effort recovery state only. On-chain validation remains authoritative.
+    }
+  }
+
+  async function recoverExisting(kind: Kind, rawAddress?: string) {
+    setError(null); setNotice(null);
+    try {
+      if (!publicClient) throw new Error('Base RPC client is not ready yet.');
+      if (!owner || !treasury) throw new Error('Enter valid Protocol Owner and Fee Treasury addresses first.');
+      const candidate = (rawAddress ?? recoveryInput[kind] ?? '').trim();
+      if (!isAddress(candidate)) throw new Error(`Enter a valid existing ${LABELS[kind]} address.`);
+      const target = getAddress(candidate);
+
+      setBusy(`recover:${kind}`);
+      const code = await publicClient.getBytecode({ address: target });
+      if (!code || code === '0x') throw new Error(`No contract bytecode exists at ${target} on Base mainnet.`);
+
+      await validate(kind, target);
+      setAddresses((x) => ({ ...x, [kind]: target }));
+      persistCoreDeployment(kind, target);
+      setRecoveryInput((x) => ({ ...x, [kind]: target }));
+      setVerify((v) => ({ ...v, [kind]: 'pending' }));
+      setVerifyMessage((m) => ({ ...m, [kind]: 'Existing on-chain deployment recovered and validated. Submitting Blockscout verification now…' }));
+      setNotice(`${LABELS[kind]} recovered at ${target}. No deployment transaction was sent.`);
+
+      const verifiedNow = await submitAndPollVerification(kind, target);
+      if (verifiedNow) setNotice(`${LABELS[kind]} recovered, validated and verified. The next contract is now unlocked.`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : `${LABELS[kind]} recovery failed.`);
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -357,6 +391,32 @@ export function IndexioDeployer() {
     setVerifyMessage((m) => ({ ...m, [kind]: 'Contract is deployed and saved. Blockscout is still indexing it. Do NOT redeploy; use Check verification.' }));
     return false;
   }
+
+  useEffect(() => {
+    if (!publicClient || !owner || !treasury) return;
+    for (const kind of Object.keys(LABELS) as Kind[]) {
+      if (addresses[kind] || !hashes[kind] || autoRecoveryAttempted.current[kind]) continue;
+      autoRecoveryAttempted.current[kind] = true;
+      const hash = hashes[kind]!;
+      void (async () => {
+        try {
+          const receipt = await publicClient.getTransactionReceipt({ hash });
+          if (receipt.status !== 'success' || !receipt.contractAddress) return;
+          const target = getAddress(receipt.contractAddress);
+          const code = await publicClient.getBytecode({ address: target });
+          if (!code || code === '0x') return;
+          await validate(kind, target);
+          setAddresses((x) => ({ ...x, [kind]: target }));
+          persistCoreDeployment(kind, target, hash);
+          setVerify((v) => ({ ...v, [kind]: 'pending' }));
+          setVerifyMessage((m) => ({ ...m, [kind]: 'Recovered automatically from the saved successful deployment transaction. Do not redeploy.' }));
+          setNotice(`${LABELS[kind]} was recovered automatically from its deployment transaction at ${target}. No new transaction was sent.`);
+        } catch {
+          // Leave the manual recovery field available if the historical transaction cannot be resolved.
+        }
+      })();
+    }
+  }, [publicClient, owner, treasury, addresses, hashes]);
 
   async function deploy(kind: Kind) {
     setError(null); setNotice(null);
@@ -489,7 +549,16 @@ export function IndexioDeployer() {
         {target && <div><span>Address</span><code>{target}</code></div>}
         {hashes[kind] && <div><span>Deploy tx</span><a href={explorerTx(hashes[kind]!)} target="_blank" rel="noreferrer">Open transaction ↗</a></div>}
       </div>
-      {!target && <button className="primary deploy" disabled={!unlocked || !!busy} onClick={() => deploy(kind)}>{busy === `deploy:${kind}` ? 'Deploying…' : `Deploy + validate ${LABELS[kind]}`}</button>}
+      {!target && <>
+        <button className="primary deploy" disabled={!unlocked || !!busy} onClick={() => deploy(kind)}>{busy === `deploy:${kind}` ? 'Deploying…' : `Deploy + validate ${LABELS[kind]}`}</button>
+        <div className="notice strong" style={{ marginTop: 12 }}>
+          <strong>Already deployed this contract?</strong> Recover the existing Base address instead of deploying again. Recovery is read-only until Blockscout verification and sends no deployment transaction.
+          <label className="field" style={{ marginTop: 10 }}>EXISTING {LABELS[kind].toUpperCase()} ADDRESS
+            <input value={recoveryInput[kind] || ''} onChange={(e) => setRecoveryInput((x) => ({ ...x, [kind]: e.target.value.trim() }))} placeholder="0x…" />
+          </label>
+          <button className="secondary" disabled={!!busy || !recoveryInput[kind]} onClick={() => recoverExisting(kind)}>{busy === `recover:${kind}` ? 'Recovering + validating…' : 'Use existing deployment'}</button>
+        </div>
+      </>}
       {target && status !== 'verified' && <button className="secondary" disabled={status === 'submitting' || !!busy} onClick={() => checkVerification(kind)}>{status === 'submitting' ? 'Checking…' : 'Check verification'}</button>}
       {target && <a className="linkButton" href={explorerAddress(target)} target="_blank" rel="noreferrer">Open contract on Base Blockscout ↗</a>}
       {target && status !== 'verified' && <div className="notice"><strong>Already deployed.</strong> Do not deploy this contract again. The next section unlocks automatically as soon as Blockscout reports this address verified.</div>}
