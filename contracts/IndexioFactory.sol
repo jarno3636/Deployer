@@ -5,6 +5,7 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IndexioAssetRegistry} from "./IndexioAssetRegistry.sol";
 import {IndexioVault} from "./IndexioVault.sol";
+import {IndexioVaultDeployer} from "./IndexioVaultDeployer.sol";
 
 contract IndexioFactory is Ownable2Step {
     uint256 public constant MAX_ASSETS = 20;
@@ -15,6 +16,7 @@ contract IndexioFactory is Ownable2Step {
 
     IndexioAssetRegistry public immutable registry;
     address public immutable settlementToken;
+    IndexioVaultDeployer public immutable vaultDeployer;
 
     address public feeTreasury;
     address public pendingFeeTreasury;
@@ -60,13 +62,23 @@ contract IndexioFactory is Ownable2Step {
     event IncomeSourceSet(address indexed vault, address indexed source, bool approved);
     event VaultClosed(address indexed vault);
 
-    constructor(address owner_, address registry_, address settlement_, address treasury_) Ownable(owner_) {
-        if (owner_ == address(0) || registry_ == address(0) || settlement_ == address(0) || treasury_ == address(0)) {
+    constructor(
+        address owner_,
+        address registry_,
+        address settlement_,
+        address treasury_,
+        address vaultDeployer_
+    ) Ownable(owner_) {
+        if (
+            owner_ == address(0) || registry_ == address(0) || settlement_ == address(0) ||
+            treasury_ == address(0) || vaultDeployer_ == address(0) || vaultDeployer_.code.length == 0
+        ) {
             revert InvalidConfig();
         }
         registry = IndexioAssetRegistry(registry_);
         settlementToken = settlement_;
         feeTreasury = treasury_;
+        vaultDeployer = IndexioVaultDeployer(vaultDeployer_);
     }
 
     function proposeFeeTreasury(address treasury_) external onlyOwner {
@@ -114,10 +126,10 @@ contract IndexioFactory is Ownable2Step {
         // Growth/Hybrid retains settlement token inside the vault; it must be a constituent.
         if (distributionBps < 10_000 && !hasSettlement) revert InvalidComposition();
 
-        IndexioVault v = new IndexioVault(
-            address(this), msg.sender, settlementToken, name, symbol, assets, weights, initialSharePriceUsd18, distributionBps
+        vault = vaultDeployer.deployVault(
+            msg.sender, settlementToken, name, symbol, assets, weights, initialSharePriceUsd18, distributionBps
         );
-        vault = address(v);
+        IndexioVault v = IndexioVault(vault);
         token = address(v.shareToken());
         allVaults.push(vault);
         isIndexVault[vault] = true;
