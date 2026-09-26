@@ -98,6 +98,7 @@ export function IndexioAdapterDeployer() {
   const [saved, setSaved] = useState<Saved>({});
   const [targetsText, setTargetsText] = useState('');
   const [spendersText, setSpendersText] = useState('');
+  const [recoveryAddress, setRecoveryAddress] = useState<Record<AdapterKind, string>>({ execution: '', rebalance: '' });
   const [busy, setBusy] = useState<string>('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -218,6 +219,69 @@ export function IndexioAdapterDeployer() {
       await verifyAdapter(kind, adapter, callerRouter);
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Adapter deployment failed.');
+    } finally { setBusy(''); }
+  }
+
+  async function recoverAdapter(kind: AdapterKind) {
+    setError(''); setNotice(''); setBusy(`recover-${kind}`);
+    try {
+      await ensureBaseAndOwner();
+      if (!publicClient) throw new Error('Base RPC unavailable.');
+      const raw = recoveryAddress[kind].trim();
+      if (!isAddress(raw)) throw new Error('Enter a valid deployed adapter address.');
+      const adapter = getAddress(raw);
+      const callerRouter = kind === 'execution' ? EXECUTION_ROUTER : REBALANCE_ROUTER;
+
+      const code = await publicClient.getBytecode({ address: adapter });
+      if (!code || code === '0x') throw new Error(`No contract bytecode found at ${adapter}.`);
+      const [owner, bound] = await Promise.all([
+        publicClient.readContract({ address: adapter, abi: adapterAdminAbi, functionName: 'owner' }),
+        publicClient.readContract({ address: adapter, abi: adapterAdminAbi, functionName: 'callerRouter' }),
+      ]);
+      if (String(owner).toLowerCase() !== PROTOCOL_OWNER.toLowerCase()) {
+        throw new Error(`Existing adapter owner mismatch. Expected ${PROTOCOL_OWNER}; found ${owner}.`);
+      }
+      if (String(bound).toLowerCase() !== callerRouter.toLowerCase()) {
+        throw new Error(`Existing adapter router binding mismatch. Expected ${callerRouter}; found ${bound}.`);
+      }
+
+      const recovered: Saved = {
+        ...saved,
+        ...(kind === 'execution'
+          ? { executionAdapter: adapter, executionVerified: false }
+          : { rebalanceAdapter: adapter, rebalanceVerified: false }),
+      };
+      persist(recovered);
+      setNotice(`Recovered ${kind} adapter ${adapter}. Submitting/checking Blockscout verification now.`);
+
+      // Verify without relying on the pre-recovery React state snapshot.
+      setVerify((v) => ({ ...v, [kind]: 'pending' }));
+      const args = encodeAbiParameters(
+        [{ type: 'address' }, { type: 'address' }],
+        [PROTOCOL_OWNER, callerRouter],
+      );
+      const res = await fetch('/api/blockscout/verify-indexio-adapter', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ address: adapter, constructorArguments: args }),
+      });
+      const json = await res.json();
+      if (!res.ok) {
+        setVerify((v) => ({ ...v, [kind]: 'error' }));
+        throw new Error(json?.error || 'Verification submission failed. The recovered address is saved; use Retry / check verification.');
+      }
+      const verified = json?.verified === true;
+      const finalSaved: Saved = {
+        ...recovered,
+        ...(kind === 'execution' ? { executionVerified: verified } : { rebalanceVerified: verified }),
+      };
+      persist(finalSaved);
+      setVerify((v) => ({ ...v, [kind]: verified ? 'verified' : 'pending' }));
+      setNotice(verified
+        ? `${kind === 'execution' ? 'Execution' : 'Rebalance'} Adapter recovered and verified. The next deployment step is unlocked.`
+        : `${kind === 'execution' ? 'Execution' : 'Rebalance'} Adapter recovered. Verification is pending; use Retry / check verification.`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Existing adapter recovery failed.');
     } finally { setBusy(''); }
   }
 
@@ -429,7 +493,21 @@ export function IndexioAdapterDeployer() {
             {adapter ? <div style={{ ...mono, marginTop: 8 }}>Deployed: <a style={{ color: '#7ab7ff' }} href={`${EXPLORER}/address/${adapter}`} target="_blank">{adapter}</a></div> : null}
             <div style={{ margin: '10px 0', color: verified ? '#79d99a' : '#f6c177' }}>Verification: {verified ? 'VERIFIED' : verify[kind].toUpperCase()}</div>
             {!adapter ? (
-              <button style={buttonStyle} disabled={!!busy || locked || !isOwnerWallet} onClick={() => deployAdapter(kind)}>{locked ? 'Locked until Execution Adapter is verified' : `Deploy ${kind === 'execution' ? 'Execution' : 'Rebalance'} Adapter`}</button>
+              <>
+                <button style={buttonStyle} disabled={!!busy || locked || !isOwnerWallet} onClick={() => deployAdapter(kind)}>{locked ? 'Locked until Execution Adapter is verified' : `Deploy ${kind === 'execution' ? 'Execution' : 'Rebalance'} Adapter`}</button>
+                {!locked ? (
+                  <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #2c3440' }}>
+                    <div style={{ color: '#aab2bf', marginBottom: 8 }}>Already deployed? Recover it without sending another deployment transaction.</div>
+                    <input
+                      value={recoveryAddress[kind]}
+                      onChange={(e) => setRecoveryAddress((v) => ({ ...v, [kind]: e.target.value }))}
+                      placeholder="Existing adapter address (0x...)"
+                      style={{ width: '100%', boxSizing: 'border-box', marginBottom: 8, padding: 12, borderRadius: 8, background: '#070a0f', color: '#fff', border: '1px solid #404854' }}
+                    />
+                    <button style={buttonStyle} disabled={!!busy || !isOwnerWallet || !recoveryAddress[kind].trim()} onClick={() => recoverAdapter(kind)}>Use existing deployment</button>
+                  </div>
+                ) : null}
+              </>
             ) : !verified ? (
               <button style={buttonStyle} disabled={!!busy} onClick={() => retryVerification(kind)}>Retry / check verification</button>
             ) : <strong style={{ color: '#79d99a' }}>Deployment complete.</strong>}
