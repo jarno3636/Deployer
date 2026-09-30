@@ -111,10 +111,17 @@ export function IndexioV25Deployer() {
       if(s.treasury&&isAddress(s.treasury))setTreasuryInput(getAddress(s.treasury));
       const a:State={}; for(const k of ORDER){if(s.addresses?.[k]&&isAddress(s.addresses[k]))a[k]=getAddress(s.addresses[k]);} setAddresses(a);
       setHashes(s.hashes||{}); setVerified(s.verified||{}); setRegistryReady(!!s.registryReady); setWired(!!s.wired); setRoutesConfigured(!!s.routesConfigured); setSmokeAccepted(!!s.smokeAccepted); setFinalized(s.finalized||{});
+      if(Array.isArray(s.routeCandidates)){
+        const restored=s.routeCandidates.filter((x:any)=>isAddress(x?.target)&&isAddress(x?.spender)&&/^0x[0-9a-fA-F]{8}$/.test(String(x?.selector||''))).map((x:any)=>({
+          target:getAddress(x.target),spender:getAddress(x.spender),selector:String(x.selector) as Hex,tool:String(x.tool||'LI.FI'),coverage:Number(x.coverage||0),samples:Array.isArray(x.samples)?x.samples.map(String):[],
+        }));
+        setRouteCandidates(restored);
+      }
+      if(s.routeDiscovery)setRouteDiscovery(s.routeDiscovery);
     } catch {}
   },[]);
   useEffect(()=>{if(address&&!ownerInput)setOwnerInput(address);if(address&&!treasuryInput)setTreasuryInput(address);},[address,ownerInput,treasuryInput]);
-  useEffect(()=>{try{localStorage.setItem(STORAGE_KEY,JSON.stringify({owner:ownerInput,treasury:treasuryInput,addresses,hashes,verified,registryReady,wired,routesConfigured,smokeAccepted,finalized}));}catch{}},[ownerInput,treasuryInput,addresses,hashes,verified,registryReady,wired,routesConfigured,smokeAccepted,finalized]);
+  useEffect(()=>{try{localStorage.setItem(STORAGE_KEY,JSON.stringify({owner:ownerInput,treasury:treasuryInput,addresses,hashes,verified,registryReady,wired,routesConfigured,smokeAccepted,finalized,routeCandidates,routeDiscovery}));}catch{}},[ownerInput,treasuryInput,addresses,hashes,verified,registryReady,wired,routesConfigured,smokeAccepted,finalized,routeCandidates,routeDiscovery]);
 
   function ready() {
     if(!isConnected||!address)throw new Error('Connect the deployment wallet first.');
@@ -276,6 +283,42 @@ export function IndexioV25Deployer() {
     finally{setBusy(null);}
   }
 
+  async function checkRouteApprovalStatus(candidates = routeCandidates, showNotice = true){
+    setError(null);
+    if(!candidates.length){
+      setRoutesConfigured(false);
+      if(showNotice)setError('No reviewed route set is loaded. Run route discovery first.');
+      return false;
+    }
+    try{
+      const adapters=(['executionAdapter','rebalanceAdapter','reinvestmentAdapter'] as Kind[]).map(k=>({kind:k,address:addresses[k]}));
+      if(adapters.some(a=>!a.address))throw new Error('All three adapters must be deployed first.');
+      const checks:string[]=[];
+      let complete=true;
+      for(const route of candidates){
+        const key=routeKeyLocal(route.target,route.spender,route.selector);
+        for(const a of adapters){
+          const allowed=await readCall<boolean>(a.address!,adapterAdminAbi,'allowedRoute',[key]);
+          checks.push(`${allowed?'✓':'○'} ${LABEL[a.kind]} · ${route.selector}`);
+          if(!allowed)complete=false;
+        }
+      }
+      setRoutesConfigured(complete);
+      if(showNotice)setNotice(complete?'All reviewed route permissions are active on all three adapters. Finalization is unlocked once the smoke-test box is checked.':`Route status refreshed. Missing permissions remain; use the approval button to submit only those.`);
+      return complete;
+    }catch(e){
+      setRoutesConfigured(false);
+      if(showNotice)setError(e instanceof Error?e.message:'Could not read adapter route status.');
+      return false;
+    }
+  }
+
+  async function refreshRouteApprovalStatus(){
+    setBusy('route-check');
+    try{ await checkRouteApprovalStatus(routeCandidates,true); }
+    finally{ setBusy(null); }
+  }
+
   async function configureDiscoveredRoutes(){
     setError(null);setBusy('routes');
     try{
@@ -296,13 +339,14 @@ export function IndexioV25Deployer() {
           sent++;
         }
       }
-      setRoutesConfigured(true);
-      setNotice(sent===0?`All ${already} adapter route permissions were already active. No transaction was sent.`:`Reviewed route set configured. ${sent} new permission transaction${sent===1?' was':'s were'} sent; ${already} already-active permission${already===1?' was':'s were'} skipped.`);
+      const complete=await checkRouteApprovalStatus(routeCandidates,false);
+      if(!complete)throw new Error('Route transactions finished, but at least one reviewed permission is still missing onchain.');
+      setNotice(sent===0?`All ${already} adapter route permissions were already active. No transaction was sent. Finalization is unlocked once the smoke-test box is checked.`:`Reviewed route set configured. ${sent} new permission transaction${sent===1?' was':'s were'} sent; ${already} already-active permission${already===1?' was':'s were'} skipped. Finalization is unlocked once the smoke-test box is checked.`);
     }catch(e){setError(e instanceof Error?e.message:'Route configuration failed.');}
     finally{setBusy(null);}
   }
 
-  async function finalizeOne(key:string,contract:Address,abi:any){setError(null);setBusy(`finalize:${key}`);try{ready();if(!routesConfigured||!smokeAccepted)throw new Error('Configure the route and confirm the V2.5 smoke tests before finalization.');await write(contract,abi,'finalizeBootstrap',[]);setFinalized(x=>({...x,[key]:true}));setNotice(`${key} bootstrap finalized permanently.`);}catch(e){setError(e instanceof Error?e.message:'Finalization failed.');}finally{setBusy(null);}}
+  async function finalizeOne(key:string,contract:Address,abi:any){setError(null);setBusy(`finalize:${key}`);try{ready();if(!smokeAccepted)throw new Error('Confirm the V2.5 smoke tests before finalization.');const routesOk=routesConfigured||await checkRouteApprovalStatus(routeCandidates,false);if(!routesOk)throw new Error('The reviewed route set is not active on all three adapters. Check route approval status first.');await write(contract,abi,'finalizeBootstrap',[]);setFinalized(x=>({...x,[key]:true}));setNotice(`${key} bootstrap finalized permanently.`);}catch(e){setError(e instanceof Error?e.message:'Finalization failed.');}finally{setBusy(null);}}
   const adaptersDone=['executionAdapter','rebalanceAdapter','reinvestmentAdapter'].every(k=>finalized[k]);
   const routersDone=['executionRouter','rebalanceRouter','reinvestmentRouter'].every(k=>finalized[k]);
 
@@ -317,7 +361,7 @@ export function IndexioV25Deployer() {
 
     <section className="card"><div className="stepHead"><div className="stepNo">11</div><div><h2>Bootstrap wiring</h2><p>Seven one-time permissions are required. This screen now reads Base first and submits only the missing transactions, so it is safe to resume after an interruption.</p></div></div><button className="ghost" onClick={()=>refreshWiringStatus()} disabled={!ORDER.every(k=>verified[k]==='verified')||!!busy}>{busy==='wire-check'?'Reading Base…':'Check wiring status'}</button>{wiringProgress.length>0&&<div className="notice"><b>Onchain wiring status</b>{wiringProgress.map(x=><p key={x}>{x}</p>)}</div>}<button className="primary" onClick={bootstrapWire} disabled={!ORDER.every(k=>verified[k]==='verified')||wired||!!busy}>{busy==='wire'?'Wiring missing permissions…':wired?'Bootstrap wiring complete ✓':'Wire only missing permissions'}</button></section>
 
-    <section className="card"><div className="stepHead"><div className="stepNo">12</div><div><h2>Discover & approve Indexio routes</h2><p>The deployer discovers currently enabled assets from your existing Asset Registry, requests live Base LI.FI quotes in both directions, deduplicates the exact target + spender + selector tuples, and keeps only routes backed by LI.FI's current official Base deployment/allowlist data.</p></div></div><button className="secondary" onClick={discoverLifiRoutes} disabled={!wired||!!busy}>{busy==='lifi-discover'?'Scanning registry & LI.FI routes…':'Discover & review Indexio routes'}</button>{routeDiscovery&&<div className="notice"><b>Discovery summary</b><p>{routeDiscovery.assetsFound} enabled registry assets found · {routeDiscovery.assetsQuoted} assets produced at least one live quote · {routeDiscovery.failures} quote attempts unavailable.</p></div>}{routeCandidates.length>0&&<div className="notice"><b>{routeCandidates.length} unique trusted tuple{routeCandidates.length===1?'':'s'} to approve</b>{routeCandidates.map((r,i)=><p key={`${r.target}:${r.spender}:${r.selector}`}><strong>{i+1}. {r.tool}</strong> · {r.selector} · coverage {r.coverage} quote{r.coverage===1?'':'s'}<br/>{r.target}<br/>{r.spender}</p>)}</div>}<button className="primary" onClick={configureDiscoveredRoutes} disabled={!wired||!routeCandidates.length||routesConfigured||!!busy}>{busy==='routes'?'Approving only missing route permissions…':routesConfigured?'Reviewed route set configured ✓':'Approve reviewed route set on all adapters'}</button><div className="notice"><b>Safety behavior.</b> Discovery does not execute swaps. It uses live quotes only to identify the routes Indexio actually needs. Re-running this step is safe: already-approved tuples are read from Base and skipped. After bootstrap, any genuinely new route still requires the adapter's 6-hour timelock.</div><div className="notice"><b>Do not finalize yet.</b> Run seed, buy, sell, rebalance, distribution, tiny-income reinvestment, normal reinvestment, pause/close, and recovery smoke tests first.</div><label className="check"><input type="checkbox" checked={smokeAccepted} onChange={e=>setSmokeAccepted(e.target.checked)}/><span>I completed the V2.5 smoke-test checklist against these exact deployed addresses and the results are green.</span></label></section>
+    <section className="card"><div className="stepHead"><div className="stepNo">12</div><div><h2>Discover & approve Indexio routes</h2><p>The deployer discovers currently enabled assets from your existing Asset Registry, requests live Base LI.FI quotes in both directions, deduplicates the exact target + spender + selector tuples, and keeps only routes backed by LI.FI's current official Base deployment/allowlist data.</p></div></div><button className="secondary" onClick={discoverLifiRoutes} disabled={!wired||!!busy}>{busy==='lifi-discover'?'Scanning registry & LI.FI routes…':'Discover & review Indexio routes'}</button>{routeDiscovery&&<div className="notice"><b>Discovery summary</b><p>{routeDiscovery.assetsFound} enabled registry assets found · {routeDiscovery.assetsQuoted} assets produced at least one live quote · {routeDiscovery.failures} quote attempts unavailable.</p></div>}{routeCandidates.length>0&&<div className="notice"><b>{routeCandidates.length} unique trusted tuple{routeCandidates.length===1?'':'s'} to approve</b>{routeCandidates.map((r,i)=><p key={`${r.target}:${r.spender}:${r.selector}`}><strong>{i+1}. {r.tool}</strong> · {r.selector} · coverage {r.coverage} quote{r.coverage===1?'':'s'}<br/>{r.target}<br/>{r.spender}</p>)}</div>}<button className="ghost" onClick={refreshRouteApprovalStatus} disabled={!wired||!routeCandidates.length||!!busy}>{busy==='route-check'?'Reading adapter permissions…':'Check route approval status'}</button><button className="primary" onClick={configureDiscoveredRoutes} disabled={!wired||!routeCandidates.length||routesConfigured||!!busy}>{busy==='routes'?'Approving only missing route permissions…':routesConfigured?'Reviewed route set configured ✓':'Approve reviewed route set on all adapters'}</button><div className="notice"><b>Safety behavior.</b> Discovery does not execute swaps. It uses live quotes only to identify the routes Indexio actually needs. Re-running this step is safe: already-approved tuples are read from Base and skipped. After bootstrap, any genuinely new route still requires the adapter's 6-hour timelock.</div><div className="notice"><b>Do not finalize yet.</b> Run seed, buy, sell, rebalance, distribution, tiny-income reinvestment, normal reinvestment, pause/close, and recovery smoke tests first.</div><label className="check"><input type="checkbox" checked={smokeAccepted} onChange={e=>setSmokeAccepted(e.target.checked)}/><span>I completed the V2.5 smoke-test checklist against these exact deployed addresses and the results are green.</span></label></section>
 
     <section className="card"><div className="stepHead"><div className="stepNo">13</div><div><h2>Irreversible finalization</h2><p>Finalize adapters first, then routers, then the Factory last. The Factory remains closed to public index launches until the final step.</p></div></div>{(['executionAdapter','rebalanceAdapter','reinvestmentAdapter'] as Kind[]).map(k=><button key={k} className="ghost" onClick={()=>finalizeOne(k,addresses[k]!,adapterAdminAbi)} disabled={!routesConfigured||!smokeAccepted||!addresses[k]||finalized[k]||!!busy}>{finalized[k]?`${LABEL[k]} finalized ✓`:`Finalize ${LABEL[k]}`}</button>)}{(['executionRouter','rebalanceRouter','reinvestmentRouter'] as Kind[]).map(k=><button key={k} className="ghost" onClick={()=>finalizeOne(k,addresses[k]!,routerAdminAbi)} disabled={!adaptersDone||!addresses[k]||finalized[k]||!!busy}>{finalized[k]?`${LABEL[k]} finalized ✓`:`Finalize ${LABEL[k]}`}</button>)}<button className="secondary" onClick={()=>finalizeOne('factory',addresses.factory!,factoryAdminAbi)} disabled={!routersDone||!addresses.factory||finalized.factory||!!busy}>{finalized.factory?'Factory finalized — V2.5 live ✓':'FINALIZE FACTORY LAST'}</button></section>
 
