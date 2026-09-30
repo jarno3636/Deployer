@@ -100,10 +100,10 @@ contract IndexioVaultV25 is ReentrancyGuard {
     function close() external onlyFactory {closed=true;depositsPaused=true;rebalancePaused=true;reinvestmentPaused=true;emit VaultClosedPermanently();}
 
     /// @notice Recover an unrelated ERC-20 accidentally sent directly to this vault.
-    /// @dev Constituents and settlementToken are always protected. Factory sends recovery to its configured treasury.
+    /// @dev Constituents, settlementToken, and this vault's own share token are always protected. Factory sends recovery to its configured treasury.
     function recoverAccidentalToken(address token,address recipient,uint256 amount) external onlyFactory nonReentrant {
         if(token==address(0)||recipient==address(0)||amount==0)revert InvalidAmount();
-        if(token==settlementToken||_isConstituent(token))revert ProtectedToken();
+        if(token==settlementToken||token==address(shareToken)||_isConstituent(token))revert ProtectedToken();
         IERC20(token).safeTransfer(recipient,amount);
         emit AccidentalTokenRecovered(token,recipient,amount);
     }
