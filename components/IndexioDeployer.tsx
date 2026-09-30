@@ -21,6 +21,7 @@ import {
   useSwitchChain,
   useWalletClient,
 } from 'wagmi';
+import { IndexioReinvestmentDeployer } from './IndexioReinvestmentDeployer';
 import {
   indexioAssetRegistryAbi,
   indexioAssetRegistryBytecode,
@@ -845,6 +846,8 @@ export function IndexioDeployer() {
       <div className="notice">Core deployment total: 5 deployment transactions. Governance total: 2 proposal transactions + 2 activation transactions after the timelock. Blockscout verification creates no wallet transaction.</div>
       <button className="ghost reset" onClick={clearLocalState}>Clear browser-saved state only</button>
     </section>
+
+    <IndexioReinvestmentDeployer />
 
     {notice && <section className="card"><div className="notice success">{notice}</div></section>}
     {error && <section className="card error"><b>Action stopped</b><p>{error}</p></section>}
