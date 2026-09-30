@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   encodeAbiParameters,
   encodeDeployData,
+  encodeFunctionData,
   getAddress,
   isAddress,
   parseAbi,
@@ -148,7 +149,19 @@ export function IndexioV25Deployer() {
 
   async function verifyContract(kind:Kind){setError(null);setBusy(`verify:${kind}`);try{const a=addresses[kind];if(!a)throw new Error('No deployed address to verify.');setVerified(x=>({...x,[kind]:'pending'}));const r=await fetch('/api/blockscout/verify-indexio-v25',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({kind:artifact(kind).verifyKind,address:a,constructorArguments:constructorArguments(kind)})});const j=await r.json();if(!r.ok)throw new Error(j.error||'Verification failed.');setVerified(x=>({...x,[kind]:j.verified?'verified':'pending'}));setNotice(j.message||'Verification submitted.');}catch(e){setVerified(x=>({...x,[kind]:'error'}));setError(e instanceof Error?e.message:'Verification failed.');}finally{setBusy(null);}}
 
-  async function write(address_:Address,abi:any,functionName:string,args:any[]=[]){const hash=await walletClient!.writeContract({account:address!,chain:base,address:address_,abi,functionName,args} as any);const r=await publicClient!.waitForTransactionReceipt({hash});if(r.status!=='success')throw new Error(`${functionName} reverted.`);return hash;}
+  async function write(address_: Address, abi: any, functionName: string, args: readonly unknown[] = []) {
+    if (!walletClient || !publicClient || !address) throw new Error('Base wallet client is not ready.');
+    const data = encodeFunctionData({ abi, functionName, args } as any);
+    const hash = await walletClient.sendTransaction({
+      account: address,
+      chain: base,
+      to: address_,
+      data,
+    });
+    const r = await publicClient.waitForTransactionReceipt({ hash });
+    if (r.status !== 'success') throw new Error(`${functionName} reverted.`);
+    return hash;
+  }
 
   async function bootstrapWire(){setError(null);setBusy('wire');try{ready();for(const k of ORDER)if(!addresses[k]||verified[k]!=='verified')throw new Error(`Verify ${LABEL[k]} first.`);const f=addresses.factory!;await write(f,factoryAdminAbi,'setExecutionRouter',[addresses.executionRouter!,true]);await write(f,factoryAdminAbi,'setRebalanceRouter',[addresses.rebalanceRouter!,true]);await write(f,factoryAdminAbi,'setReinvestmentRouter',[addresses.reinvestmentRouter!,true]);await write(f,factoryAdminAbi,'setDefaultReinvestmentRouter',[addresses.reinvestmentRouter!]);await write(addresses.executionRouter!,routerAdminAbi,'setAdapter',[addresses.executionAdapter!,true]);await write(addresses.rebalanceRouter!,routerAdminAbi,'setAdapter',[addresses.rebalanceAdapter!,true]);await write(addresses.reinvestmentRouter!,routerAdminAbi,'setAdapter',[addresses.reinvestmentAdapter!,true]);setWired(true);setNotice('Factory roles, default reinvestment router, and dedicated adapters are wired in bootstrap mode.');}catch(e){setError(e instanceof Error?e.message:'Bootstrap wiring failed.');}finally{setBusy(null);}}
 
