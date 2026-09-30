@@ -10,6 +10,7 @@ const mirroredFiles = [
   'IndexioFactory.sol',
   'IndexioExecutionRouter.sol',
   'IndexioRebalanceRouter.sol',
+  'IndexioReinvestmentRouter.sol',
   'IndexioVault.sol',
   'IndexioShareToken.sol',
   'IndexioIncomeDistributor.sol',
@@ -32,6 +33,7 @@ const entrypoints = [
   'contracts/indexio/IndexioFactory.sol',
   'contracts/indexio/IndexioExecutionRouter.sol',
   'contracts/indexio/IndexioRebalanceRouter.sol',
+  'contracts/indexio/IndexioReinvestmentRouter.sol',
 ];
 
 const importPattern = /import\s+(?:[^"']*?from\s+)?["']([^"']+)["']\s*;/g;
@@ -88,6 +90,7 @@ const targets = [
   ['factory', 'contracts/indexio/IndexioFactory.sol', 'IndexioFactory'],
   ['executionRouter', 'contracts/indexio/IndexioExecutionRouter.sol', 'IndexioExecutionRouter'],
   ['rebalanceRouter', 'contracts/indexio/IndexioRebalanceRouter.sol', 'IndexioRebalanceRouter'],
+  ['reinvestmentRouter', 'contracts/indexio/IndexioReinvestmentRouter.sol', 'IndexioReinvestmentRouter'],
 ];
 
 function artifact(source, name) {
