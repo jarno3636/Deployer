@@ -66,6 +66,9 @@ const adapterAdminAbi = parseAbi([
   'function bootstrapFinalized() view returns (bool)',
   'function finalizeBootstrap()',
 ]);
+const assetRegistryReadAbi = parseAbi([
+  'function config(address asset) view returns (bool enabled,uint16 maxWeightBps,uint8 decimals)',
+]);
 
 function explorerAddress(a: string) { return `${EXPLORER}/address/${a}`; }
 function explorerTx(h: string) { return `${EXPLORER}/tx/${h}`; }
@@ -97,6 +100,8 @@ export function IndexioV25Deployer() {
   const [target,setTarget] = useState('');
   const [spender,setSpender] = useState('');
   const [selector,setSelector] = useState('');
+  const [sampleToken,setSampleToken] = useState('');
+  const [routeQuote,setRouteQuote] = useState<{tool:string;fromAmount:string;toAmountMin:string;target:Address;spender:Address;selector:Hex}|null>(null);
   const [finalized,setFinalized] = useState<Record<string,boolean>>({});
 
   const owner = isAddress(ownerInput) ? getAddress(ownerInput) : null;
@@ -112,11 +117,11 @@ export function IndexioV25Deployer() {
       if(s.treasury&&isAddress(s.treasury))setTreasuryInput(getAddress(s.treasury));
       const a:State={}; for(const k of ORDER){if(s.addresses?.[k]&&isAddress(s.addresses[k]))a[k]=getAddress(s.addresses[k]);} setAddresses(a);
       setHashes(s.hashes||{}); setVerified(s.verified||{}); setRegistryReady(!!s.registryReady); setWired(!!s.wired); setRoutesConfigured(!!s.routesConfigured); setSmokeAccepted(!!s.smokeAccepted); setFinalized(s.finalized||{});
-      setTarget(s.target||'');setSpender(s.spender||'');setSelector(s.selector||'');
+      setTarget(s.target||'');setSpender(s.spender||'');setSelector(s.selector||'');setSampleToken(s.sampleToken||'');
     } catch {}
   },[]);
   useEffect(()=>{if(address&&!ownerInput)setOwnerInput(address);if(address&&!treasuryInput)setTreasuryInput(address);},[address,ownerInput,treasuryInput]);
-  useEffect(()=>{try{localStorage.setItem(STORAGE_KEY,JSON.stringify({owner:ownerInput,treasury:treasuryInput,addresses,hashes,verified,registryReady,wired,routesConfigured,smokeAccepted,finalized,target,spender,selector}));}catch{}},[ownerInput,treasuryInput,addresses,hashes,verified,registryReady,wired,routesConfigured,smokeAccepted,finalized,target,spender,selector]);
+  useEffect(()=>{try{localStorage.setItem(STORAGE_KEY,JSON.stringify({owner:ownerInput,treasury:treasuryInput,addresses,hashes,verified,registryReady,wired,routesConfigured,smokeAccepted,finalized,target,spender,selector,sampleToken}));}catch{}},[ownerInput,treasuryInput,addresses,hashes,verified,registryReady,wired,routesConfigured,smokeAccepted,finalized,target,spender,selector,sampleToken]);
 
   function ready() {
     if(!isConnected||!address)throw new Error('Connect the deployment wallet first.');
@@ -246,6 +251,31 @@ export function IndexioV25Deployer() {
     }catch(e){setError(e instanceof Error?e.message:'Bootstrap wiring failed.');}finally{setBusy(null);}
   }
 
+  async function fetchLifiRoute(){
+    setError(null);setNotice(null);setBusy('lifi-route');setRouteQuote(null);
+    try{
+      ready();
+      if(!wired)throw new Error('Complete bootstrap wiring first.');
+      if(!isAddress(sampleToken))throw new Error('Enter one enabled Asset Registry token address to sample.');
+      const token=getAddress(sampleToken);
+      const cfg=await readCall<readonly [boolean,number,number]>(EXISTING_ASSET_REGISTRY,assetRegistryReadAbi,'config',[token]);
+      if(!cfg[0])throw new Error('That token is not currently enabled in the existing Asset Registry.');
+      const r=await fetch('/api/lifi/route',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({toToken:token,fromAddress:address})});
+      const j=await r.json().catch(()=>({}));
+      if(!r.ok)throw new Error(j?.error||`LI.FI route lookup failed (${r.status}).`);
+      if(!isAddress(j.target)||!isAddress(j.spender)||!/^0x[0-9a-fA-F]{8}$/.test(j.selector))throw new Error('LI.FI returned an incomplete or invalid route tuple.');
+      const t=getAddress(j.target),sp=getAddress(j.spender),sel=j.selector as Hex;
+      const [targetCode,spenderCode]=await Promise.all([publicClient!.getBytecode({address:t}),publicClient!.getBytecode({address:sp})]);
+      if(!targetCode||targetCode==='0x')throw new Error('LI.FI target has no bytecode on Base; refusing to pre-approve it.');
+      if(!spenderCode||spenderCode==='0x')throw new Error('LI.FI approval spender has no bytecode on Base; refusing to pre-approve it.');
+      setTarget(t);setSpender(sp);setSelector(sel);
+      setRouteQuote({tool:String(j.tool||'LI.FI'),fromAmount:String(j.fromAmount||''),toAmountMin:String(j.toAmountMin||''),target:t,spender:sp,selector:sel});
+      setRoutesConfigured(false);
+      setNotice('Live LI.FI Base quote validated. Review the populated target, spender, and selector before enabling it on the adapters.');
+    }catch(e){setError(e instanceof Error?e.message:'Could not fetch a reviewed LI.FI route.');}
+    finally{setBusy(null);}
+  }
+
   async function configureRoutes(){setError(null);setBusy('routes');try{ready();if(!wired)throw new Error('Wire V2.5 first.');if(!isAddress(target)||!isAddress(spender)||!/^0x[0-9a-fA-F]{8}$/.test(selector))throw new Error('Enter reviewed target, spender, and 4-byte selector (0x + 8 hex chars).');for(const k of ['executionAdapter','rebalanceAdapter','reinvestmentAdapter'] as Kind[])await write(addresses[k]!,adapterAdminAbi,'setRoute',[getAddress(target),getAddress(spender),selector as Hex,true]);setRoutesConfigured(true);setNotice('Reviewed route tuple enabled on all three dedicated adapters.');}catch(e){setError(e instanceof Error?e.message:'Route configuration failed.');}finally{setBusy(null);}}
 
   async function finalizeOne(key:string,contract:Address,abi:any){setError(null);setBusy(`finalize:${key}`);try{ready();if(!routesConfigured||!smokeAccepted)throw new Error('Configure the route and confirm the V2.5 smoke tests before finalization.');await write(contract,abi,'finalizeBootstrap',[]);setFinalized(x=>({...x,[key]:true}));setNotice(`${key} bootstrap finalized permanently.`);}catch(e){setError(e instanceof Error?e.message:'Finalization failed.');}finally{setBusy(null);}}
@@ -263,7 +293,7 @@ export function IndexioV25Deployer() {
 
     <section className="card"><div className="stepHead"><div className="stepNo">11</div><div><h2>Bootstrap wiring</h2><p>Seven one-time permissions are required. This screen now reads Base first and submits only the missing transactions, so it is safe to resume after an interruption.</p></div></div><button className="ghost" onClick={()=>refreshWiringStatus()} disabled={!ORDER.every(k=>verified[k]==='verified')||!!busy}>{busy==='wire-check'?'Reading Base…':'Check wiring status'}</button>{wiringProgress.length>0&&<div className="notice"><b>Onchain wiring status</b>{wiringProgress.map(x=><p key={x}>{x}</p>)}</div>}<button className="primary" onClick={bootstrapWire} disabled={!ORDER.every(k=>verified[k]==='verified')||wired||!!busy}>{busy==='wire'?'Wiring missing permissions…':wired?'Bootstrap wiring complete ✓':'Wire only missing permissions'}</button></section>
 
-    <section className="card"><div className="stepHead"><div className="stepNo">12</div><div><h2>Reviewed swap route</h2><p>Use the exact LI.FI (or other reviewed) target + spender + selector tuple. V2.5 no longer gives arbitrary target/spender authority.</p></div></div><label className="field">Target<input value={target} onChange={e=>setTarget(e.target.value)} placeholder="0x…"/></label><label className="field">Spender<input value={spender} onChange={e=>setSpender(e.target.value)} placeholder="0x…"/></label><label className="field">Function selector<input value={selector} onChange={e=>setSelector(e.target.value)} placeholder="0x12345678"/></label><button className="primary" onClick={configureRoutes} disabled={!wired||routesConfigured||!!busy}>{routesConfigured?'Routes configured ✓':'Enable reviewed route on all adapters'}</button><div className="notice"><b>Do not finalize yet.</b> Run seed, buy, sell, rebalance, distribution, tiny-income reinvestment, normal reinvestment, pause/close, and recovery smoke tests first.</div><label className="check"><input type="checkbox" checked={smokeAccepted} onChange={e=>setSmokeAccepted(e.target.checked)}/><span>I completed the V2.5 smoke-test checklist against these exact deployed addresses and the results are green.</span></label></section>
+    <section className="card"><div className="stepHead"><div className="stepNo">12</div><div><h2>Reviewed swap route</h2><p>Fetch a live same-chain Base quote from LI.FI. The deployer verifies the sample token is enabled in your existing Asset Registry, then extracts and validates the exact target + spender + function selector tuple.</p></div></div><label className="field">Registered asset to sample<input value={sampleToken} onChange={e=>{setSampleToken(e.target.value);setRouteQuote(null);setRoutesConfigured(false);}} placeholder="0x… enabled asset address"/></label><button className="secondary" onClick={fetchLifiRoute} disabled={!wired||!!busy}>{busy==='lifi-route'?'Fetching & validating LI.FI route…':'Fetch live LI.FI Base route'}</button>{routeQuote&&<div className="notice"><b>Live route found</b><p>Tool: {routeQuote.tool}</p><p>Quote sample: 10 USDC. This lookup is for permission discovery only; it does not execute a swap.</p></div>}<label className="field">Target<input value={target} readOnly placeholder="Fetched from LI.FI"/></label><label className="field">Spender<input value={spender} readOnly placeholder="Fetched from LI.FI"/></label><label className="field">Function selector<input value={selector} readOnly placeholder="Fetched from LI.FI"/></label><button className="primary" onClick={configureRoutes} disabled={!wired||!routeQuote||routesConfigured||!!busy}>{routesConfigured?'Routes configured ✓':'Enable this reviewed route on all adapters'}</button><div className="notice"><b>Important.</b> LI.FI can return different route tuples for different assets/tools. This approves only the exact tuple shown above. Additional tuples can be reviewed and added during bootstrap, or later through the 6-hour route timelock.</div><div className="notice"><b>Do not finalize yet.</b> Run seed, buy, sell, rebalance, distribution, tiny-income reinvestment, normal reinvestment, pause/close, and recovery smoke tests first.</div><label className="check"><input type="checkbox" checked={smokeAccepted} onChange={e=>setSmokeAccepted(e.target.checked)}/><span>I completed the V2.5 smoke-test checklist against these exact deployed addresses and the results are green.</span></label></section>
 
     <section className="card"><div className="stepHead"><div className="stepNo">13</div><div><h2>Irreversible finalization</h2><p>Finalize adapters first, then routers, then the Factory last. The Factory remains closed to public index launches until the final step.</p></div></div>{(['executionAdapter','rebalanceAdapter','reinvestmentAdapter'] as Kind[]).map(k=><button key={k} className="ghost" onClick={()=>finalizeOne(k,addresses[k]!,adapterAdminAbi)} disabled={!routesConfigured||!smokeAccepted||!addresses[k]||finalized[k]||!!busy}>{finalized[k]?`${LABEL[k]} finalized ✓`:`Finalize ${LABEL[k]}`}</button>)}{(['executionRouter','rebalanceRouter','reinvestmentRouter'] as Kind[]).map(k=><button key={k} className="ghost" onClick={()=>finalizeOne(k,addresses[k]!,routerAdminAbi)} disabled={!adaptersDone||!addresses[k]||finalized[k]||!!busy}>{finalized[k]?`${LABEL[k]} finalized ✓`:`Finalize ${LABEL[k]}`}</button>)}<button className="secondary" onClick={()=>finalizeOne('factory',addresses.factory!,factoryAdminAbi)} disabled={!routersDone||!addresses.factory||finalized.factory||!!busy}>{finalized.factory?'Factory finalized — V2.5 live ✓':'FINALIZE FACTORY LAST'}</button></section>
 
