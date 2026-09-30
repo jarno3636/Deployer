@@ -1,16 +1,164 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAddress } from 'viem';
 import { indexioV25StandardJsonInput } from '../../../../lib/indexio-v25-verification.generated';
-export const runtime='nodejs';
-const CHAIN_ID=8453, COMPILER='v0.8.30+commit.73712a01';
-const CONTRACTS={
- vaultDeployer:'contracts/indexio-v25/IndexioVaultDeployerV25.sol:IndexioVaultDeployerV25',
- factory:'contracts/indexio-v25/IndexioFactoryV25.sol:IndexioFactoryV25',
- executionRouter:'contracts/indexio-v25/IndexioExecutionRouterV25.sol:IndexioExecutionRouterV25',
- rebalanceRouter:'contracts/indexio-v25/IndexioRebalanceRouterV25.sol:IndexioRebalanceRouterV25',
- reinvestmentRouter:'contracts/indexio-v25/IndexioReinvestmentRouterV25.sol:IndexioReinvestmentRouterV25',
- adapter:'contracts/indexio-v25/IndexioRestrictedSwapAdapterV25.sol:IndexioRestrictedSwapAdapterV25',
+
+export const runtime = 'nodejs';
+
+const BASE_BLOCKSCOUT = 'https://base.blockscout.com';
+const COMPILER = 'v0.8.30+commit.73712a01';
+const CONTRACTS = {
+  vaultDeployer: {
+    fq: 'contracts/indexio-v25/IndexioVaultDeployerV25.sol:IndexioVaultDeployerV25',
+    name: 'IndexioVaultDeployerV25',
+  },
+  factory: {
+    fq: 'contracts/indexio-v25/IndexioFactoryV25.sol:IndexioFactoryV25',
+    name: 'IndexioFactoryV25',
+  },
+  executionRouter: {
+    fq: 'contracts/indexio-v25/IndexioExecutionRouterV25.sol:IndexioExecutionRouterV25',
+    name: 'IndexioExecutionRouterV25',
+  },
+  rebalanceRouter: {
+    fq: 'contracts/indexio-v25/IndexioRebalanceRouterV25.sol:IndexioRebalanceRouterV25',
+    name: 'IndexioRebalanceRouterV25',
+  },
+  reinvestmentRouter: {
+    fq: 'contracts/indexio-v25/IndexioReinvestmentRouterV25.sol:IndexioReinvestmentRouterV25',
+    name: 'IndexioReinvestmentRouterV25',
+  },
+  adapter: {
+    fq: 'contracts/indexio-v25/IndexioRestrictedSwapAdapterV25.sol:IndexioRestrictedSwapAdapterV25',
+    name: 'IndexioRestrictedSwapAdapterV25',
+  },
 } as const;
-async function json(res:Response){const t=await res.text();try{return JSON.parse(t)}catch{return {message:t}}}
-async function verified(address:string,key:string){const r=await fetch(`https://base.blockscout.com/api/v2/smart-contracts/${address}`,{headers:key?{authorization:`Bearer ${key}`}:{},cache:'no-store'});if(!r.ok)return false;const j=await json(r);return j?.is_verified===true||j?.isVerified===true||String(j?.source_code||'').length>0;}
-export async function POST(req:NextRequest){try{const key=process.env.BLOCKSCOUT_API_KEY||'';const {kind,address,constructorArguments='',mode='verify'}=await req.json();if(!(kind in CONTRACTS)||!isAddress(address))return NextResponse.json({error:'Valid V2.5 contract kind and address required.'},{status:400});if(await verified(address,key))return NextResponse.json({ok:true,verified:true,message:'Verified on Base Blockscout.'});if(mode==='check')return NextResponse.json({ok:true,verified:false,message:'Source not published yet.'});const body=new URLSearchParams({chain_id:String(CHAIN_ID),module:'contract',action:'verifysourcecode',codeformat:'solidity-standard-json-input',contractaddress:address,contractname:CONTRACTS[kind as keyof typeof CONTRACTS],compilerversion:COMPILER,sourceCode:indexioV25StandardJsonInput,constructorArguments:String(constructorArguments).replace(/^0x/,''),apikey:key});const r=await fetch('https://api.blockscout.com/v2/api',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',...(key?{authorization:`Bearer ${key}`}:{})},body:body.toString(),cache:'no-store'});const j=await json(r);if(!r.ok||String(j?.status)==='0')return NextResponse.json({error:j?.result||j?.message||'Verification rejected',deployed:true},{status:422});for(let i=0;i<8;i++){await new Promise(x=>setTimeout(x,2000));if(await verified(address,key))return NextResponse.json({ok:true,verified:true,message:'Verified and published on Base Blockscout.'});}return NextResponse.json({ok:true,verified:false,message:'Verification accepted; publication pending. Do not redeploy.'});}catch(e){return NextResponse.json({error:e instanceof Error?e.message:'Verification failed.'},{status:500})}}
+
+type ContractKind = keyof typeof CONTRACTS;
+
+async function readJson(res: Response) {
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return { message: text || res.statusText }; }
+}
+
+async function isVerified(address: string) {
+  const res = await fetch(`${BASE_BLOCKSCOUT}/api/v2/smart-contracts/${address}`, { cache: 'no-store' });
+  if (!res.ok) return false;
+  const body = await readJson(res);
+  return body?.is_verified === true || body?.isVerified === true || String(body?.source_code || '').length > 0;
+}
+
+async function isIndexedContract(address: string) {
+  const res = await fetch(`${BASE_BLOCKSCOUT}/api/v2/addresses/${address}`, { cache: 'no-store' });
+  if (!res.ok) return false;
+  const body = await readJson(res);
+  return body?.is_contract === true || body?.isContract === true || body?.is_verified === true;
+}
+
+async function waitForIndex(address: string) {
+  for (let i = 0; i < 8; i++) {
+    if (await isIndexedContract(address)) return true;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+  return false;
+}
+
+async function verifyViaV2(address: string, kind: ContractKind, constructorArguments: string) {
+  const contract = CONTRACTS[kind];
+  const form = new FormData();
+  form.append('compiler_version', COMPILER);
+  form.append('contract_name', contract.name);
+  form.append('autodetect_constructor_args', 'false');
+  form.append('constructor_args', constructorArguments.replace(/^0x/, ''));
+  form.append(
+    'files[0]',
+    new Blob([indexioV25StandardJsonInput], { type: 'application/json' }),
+    'indexio-v25-standard-input.json',
+  );
+
+  const res = await fetch(
+    `${BASE_BLOCKSCOUT}/api/v2/smart-contracts/${address}/verification/via/standard-input`,
+    { method: 'POST', body: form, cache: 'no-store' },
+  );
+  const body = await readJson(res);
+  return { ok: res.ok, status: res.status, body };
+}
+
+async function verifyViaLegacy(address: string, kind: ContractKind, constructorArguments: string) {
+  const contract = CONTRACTS[kind];
+  const form = new FormData();
+  form.append('module', 'contract');
+  form.append('action', 'verifysourcecode');
+  form.append('codeformat', 'solidity-standard-json-input');
+  form.append('contractaddress', address);
+  form.append('contractname', contract.fq);
+  form.append('compilerversion', COMPILER);
+  form.append('sourceCode', indexioV25StandardJsonInput);
+  form.append('constructorArguments', constructorArguments.replace(/^0x/, ''));
+
+  const res = await fetch(`${BASE_BLOCKSCOUT}/api`, { method: 'POST', body: form, cache: 'no-store' });
+  const body = await readJson(res);
+  const accepted = res.ok && String(body?.status ?? '1') !== '0';
+  return { ok: accepted, status: res.status, body };
+}
+
+function errorMessage(body: any, fallback: string) {
+  if (typeof body?.message === 'string' && body.message) return body.message;
+  if (typeof body?.result === 'string' && body.result) return body.result;
+  if (Array.isArray(body?.errors) && body.errors.length) return body.errors.map((x: any) => x?.detail || x?.title || String(x)).join('; ');
+  return fallback;
+}
+
+export async function POST(req: NextRequest) {
+  try {
+    const { kind, address, constructorArguments = '', mode = 'verify' } = await req.json();
+    if (!(kind in CONTRACTS) || !isAddress(address)) {
+      return NextResponse.json({ error: 'Valid V2.5 contract kind and address required.' }, { status: 400 });
+    }
+
+    if (await isVerified(address)) {
+      return NextResponse.json({ ok: true, verified: true, message: 'Verified on Base Blockscout.' });
+    }
+
+    const indexed = await waitForIndex(address);
+    if (!indexed) {
+      return NextResponse.json({
+        ok: true,
+        verified: false,
+        indexed: false,
+        message: 'Base Blockscout has not indexed this new contract yet. Wait about 15–30 seconds, then tap Verify again. Do not redeploy.',
+      });
+    }
+
+    if (mode === 'check') {
+      return NextResponse.json({ ok: true, verified: false, indexed: true, message: 'Contract is indexed but source is not verified yet.' });
+    }
+
+    const v2 = await verifyViaV2(address, kind as ContractKind, String(constructorArguments));
+    if (!v2.ok) {
+      const legacy = await verifyViaLegacy(address, kind as ContractKind, String(constructorArguments));
+      if (!legacy.ok) {
+        return NextResponse.json({
+          error: `Base Blockscout rejected verification. ${errorMessage(v2.body, '') || errorMessage(legacy.body, '')}`.trim(),
+          details: { v2: v2.body, legacy: legacy.body },
+          deployed: true,
+        }, { status: 422 });
+      }
+    }
+
+    for (let i = 0; i < 10; i++) {
+      await new Promise((resolve) => setTimeout(resolve, 1800));
+      if (await isVerified(address)) {
+        return NextResponse.json({ ok: true, verified: true, message: 'Verified and published on Base Blockscout.' });
+      }
+    }
+
+    return NextResponse.json({
+      ok: true,
+      verified: false,
+      indexed: true,
+      message: 'Verification was submitted to Base Blockscout and is still processing. Tap again to recheck this same address; do not redeploy.',
+    });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : 'Verification failed.' }, { status: 500 });
+  }
+}
