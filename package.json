@@ -7,12 +7,14 @@
     "build": "next build",
     "start": "next start",
     "check:artifacts": "node scripts/check-artifacts.mjs",
-    "prebuild": "npm run compile:scanarc && npm run compile:indexio",
+    "prebuild": "npm run compile:scanarc && npm run compile:indexio && npm run compile:indexio-v25",
     "compile:scanarc": "node scripts/compile-scanarc-router.mjs",
     "compile:bridge": "node scripts/compile-scanarc-bridge.mjs",
     "compile:indexio": "node scripts/compile-indexio.mjs && node scripts/compile-indexio-adapter.mjs",
     "compile:indexio-adapter": "node scripts/compile-indexio-adapter.mjs",
-    "compile:indexio-v25": "node scripts/compile-indexio-v25.mjs"
+    "compile:indexio-v25": "node scripts/compile-indexio-v25.mjs",
+    "check:indexio-v25": "node scripts/check-indexio-v25-security.mjs",
+    "release:indexio-v25": "npm run check:indexio-v25 && npm run compile:indexio-v25 && npm run build"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
