@@ -35,7 +35,7 @@ contract IndexioVaultV25 is ReentrancyGuard {
 
     error OnlyFactory(); error OnlyExecutionRouter(); error OnlyRebalanceRouter(); error OnlyReinvestmentRouter();
     error InvalidAmount(); error InvalidReceiver(); error NotSeeded(); error AlreadySeeded(); error Slippage(); error UnsupportedToken(); error InvalidTreasury();
-    error DepositsPaused(); error IncomePaused(); error RebalancePaused(); error ReinvestmentPaused(); error VaultClosed(); error UnapprovedIncomeSource(); error ReinvestmentRequired(); error AssetDisabled();
+    error DepositsPaused(); error IncomePaused(); error RebalancePaused(); error ReinvestmentPaused(); error VaultClosed(); error UnapprovedIncomeSource(); error ReinvestmentRequired(); error AssetDisabled(); error ProtectedToken();
 
     event Seeded(address indexed creator,uint256 shares,uint256[] fees);
     event Deposited(address indexed caller,address indexed receiver,uint256 shares,uint256[] acceptedGross,uint256[] refunds,uint256[] fees);
@@ -44,6 +44,7 @@ contract IndexioVaultV25 is ReentrancyGuard {
     event PauseState(bool depositsPaused,bool incomePaused,bool rebalancePaused,bool reinvestmentPaused);
     event VaultClosedPermanently();
     event RebalanceAssetReleased(address indexed router,address indexed token,uint256 amount);
+    event AccidentalTokenRecovered(address indexed token,address indexed recipient,uint256 amount);
 
     constructor(address factory_,address creator_,address settlement_,string memory name_,string memory symbol_,address[] memory assets_,uint16[] memory weights_,uint256 initialSharePriceUsd18_,uint16 distributionBps_) {
         factory=factory_; creator=creator_; settlementToken=settlement_; _assets=assets_; _weights=weights_; initialSharePriceUsd18=initialSharePriceUsd18_; distributionBps=distributionBps_;
@@ -97,6 +98,15 @@ contract IndexioVaultV25 is ReentrancyGuard {
     }
     function setPauseState(bool deposits,bool income,bool rebalance,bool reinvestment) external onlyFactory {depositsPaused=deposits;incomePaused=income;rebalancePaused=rebalance;reinvestmentPaused=reinvestment;emit PauseState(deposits,income,rebalance,reinvestment);}
     function close() external onlyFactory {closed=true;depositsPaused=true;rebalancePaused=true;reinvestmentPaused=true;emit VaultClosedPermanently();}
+
+    /// @notice Recover an unrelated ERC-20 accidentally sent directly to this vault.
+    /// @dev Constituents and settlementToken are always protected. Factory sends recovery to its configured treasury.
+    function recoverAccidentalToken(address token,address recipient,uint256 amount) external onlyFactory nonReentrant {
+        if(token==address(0)||recipient==address(0)||amount==0)revert InvalidAmount();
+        if(token==settlementToken||_isConstituent(token))revert ProtectedToken();
+        IERC20(token).safeTransfer(recipient,amount);
+        emit AccidentalTokenRecovered(token,recipient,amount);
+    }
 
     function _recordDistributed(uint256 amount) internal { IERC20(settlementToken).forceApprove(address(incomeDistributor),amount); incomeDistributor.recordIncome(amount); IERC20(settlementToken).forceApprove(address(incomeDistributor),0); }
     function _previewDeposit(uint256[] calldata grossAmounts) internal view returns(uint256 shares,uint256[] memory acceptedGross,uint256[] memory refunds){

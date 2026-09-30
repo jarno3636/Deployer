@@ -20,15 +20,18 @@ contract IndexioExecutionRouterV25 is Ownable2Step, Pausable, ReentrancyGuard {
     uint256 private constant BPS = 10_000;
     uint256 private constant FEE_BPS = 100;
     uint256 public constant MIN_GROSS_SEED_USD18 = 100e18;
+    uint256 public constant MAX_SLIPPAGE_BPS = 500; // minOut must stay within 5% of the submitted quote
     
     struct BuyLeg {
         address adapter;
         uint256 amountIn;     // settlement units allocated to this asset
+        uint256 quotedAmountOut;
         uint256 minAmountOut; // constituent units
         bytes routeData;
     }
     struct SellLeg {
         address adapter;
+        uint256 quotedAmountOut;
         uint256 minAmountOut;
         bytes routeData;
     }
@@ -55,6 +58,7 @@ contract IndexioExecutionRouterV25 is Ownable2Step, Pausable, ReentrancyGuard {
     event IndexSold(address indexed seller,address indexed vault,address indexed receiver,uint256 sharesIn,uint256 settlementOut);
     event ExcessRefunded(address indexed buyer,address indexed token,uint256 amount);
 
+    event AccidentalTokenRecovered(address indexed token,address indexed recipient,uint256 amount);
     constructor(address owner_,address factory_,address settlementToken_) Ownable(owner_) {
         if (owner_ == address(0) || factory_ == address(0) || settlementToken_ == address(0)) revert InvalidAddress();
         factory = IIndexioFactoryV25(factory_);
@@ -166,11 +170,12 @@ contract IndexioExecutionRouterV25 is Ownable2Step, Pausable, ReentrancyGuard {
     }
 
     function sellIndex(
-        address vault,uint256 sharesIn,SellLeg[] calldata legs,uint256 minSettlementOut,address receiver,uint256 deadline
+        address vault,uint256 sharesIn,SellLeg[] calldata legs,uint256 quotedSettlementOut,uint256 minSettlementOut,address receiver,uint256 deadline
     ) external nonReentrant whenNotPaused returns(uint256 settlementOut) {
         if (block.timestamp > deadline) revert DeadlineExpired();
         if (!factory.isIndexVault(vault)) revert InvalidVault();
         if (receiver == address(0) || sharesIn == 0) revert InvalidAmount();
+        _validateSlippage(quotedSettlementOut,minSettlementOut);
         IIndexioVaultV25 v = IIndexioVaultV25(vault);
         if (v.settlementToken() != settlementToken) revert InvalidVault();
         address[] memory assets = v.assets();
@@ -188,10 +193,11 @@ contract IndexioExecutionRouterV25 is Ownable2Step, Pausable, ReentrancyGuard {
             if (amount == 0) continue;
             SellLeg calldata leg = legs[i];
             if (assets[i] == settlementToken) {
-                if (leg.adapter != address(0) || leg.routeData.length != 0 || leg.minAmountOut > amount) revert InvalidLegs();
+                if (leg.adapter != address(0) || leg.routeData.length != 0 || leg.quotedAmountOut != amount || leg.minAmountOut > amount) revert InvalidLegs();
                 settlementOut += amount;
             } else {
                 if (!approvedAdapter[leg.adapter]) revert InvalidAdapter();
+                _validateSlippage(leg.quotedAmountOut,leg.minAmountOut);
                 uint256 beforeOut = IERC20(settlementToken).balanceOf(address(this));
                 IERC20(assets[i]).safeTransfer(leg.adapter,amount);
                 uint256 out = IIndexioSwapAdapterV25(leg.adapter).swapExactInput(
@@ -213,12 +219,19 @@ contract IndexioExecutionRouterV25 is Ownable2Step, Pausable, ReentrancyGuard {
         if (IERC20(settlementToken).balanceOf(address(this)) - beforeBal != amount) revert UnsupportedTokenBehavior();
     }
 
+    function _validateSlippage(uint256 quotedAmountOut,uint256 minAmountOut) internal pure {
+        if(quotedAmountOut==0||minAmountOut==0) revert Slippage();
+        uint256 floor=Math.mulDiv(quotedAmountOut,BPS-MAX_SLIPPAGE_BPS,BPS);
+        if(minAmountOut<floor||minAmountOut>quotedAmountOut) revert Slippage();
+    }
+
     function _executeBuyLeg(address asset,BuyLeg calldata leg) internal returns(uint256 grossOut) {
         if (asset == settlementToken) {
-            if (leg.adapter != address(0) || leg.routeData.length != 0 || leg.minAmountOut > leg.amountIn) revert InvalidLegs();
+            if (leg.adapter != address(0) || leg.routeData.length != 0 || leg.quotedAmountOut != leg.amountIn || leg.minAmountOut > leg.amountIn) revert InvalidLegs();
             return leg.amountIn;
         }
-        if (!approvedAdapter[leg.adapter] || leg.minAmountOut == 0) revert InvalidAdapter();
+        if (!approvedAdapter[leg.adapter]) revert InvalidAdapter();
+        _validateSlippage(leg.quotedAmountOut,leg.minAmountOut);
         uint256 beforeOut = IERC20(asset).balanceOf(address(this));
         IERC20(settlementToken).safeTransfer(leg.adapter,leg.amountIn);
         uint256 out = IIndexioSwapAdapterV25(leg.adapter).swapExactInput(
@@ -234,5 +247,13 @@ contract IndexioExecutionRouterV25 is Ownable2Step, Pausable, ReentrancyGuard {
     }
     function _clearBasketApprovals(address[] memory assets,address vault) internal {
         for (uint256 i; i < assets.length; ++i) IERC20(assets[i]).forceApprove(vault,0);
+    }
+
+    /// @notice Recover an ERC-20 accidentally sent outside an active atomic operation. Recipient is fixed to owner/Safe.
+    function recoverAccidentalToken(address token,uint256 amount) external onlyOwner nonReentrant {
+        if(token==address(0)||amount==0)revert InvalidAmount();if(token==settlementToken)revert InvalidAmount();
+        address recipient=owner();
+        IERC20(token).safeTransfer(recipient,amount);
+        emit AccidentalTokenRecovered(token,recipient,amount);
     }
 }

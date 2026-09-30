@@ -69,6 +69,7 @@ contract IndexioFactoryV25 is Ownable2Step {
     event DefaultReinvestmentRouterProposed(address indexed router,uint256 validAt);
     event BootstrapFinalized(address indexed owner);
     event VaultClosed(address indexed vault);
+    event VaultAccidentalTokenRecovered(address indexed vault,address indexed token,address indexed recipient,uint256 amount);
 
     constructor(address owner_,address registry_,address settlement_,address treasury_,address vaultDeployer_) Ownable(owner_) {
         if(owner_==address(0)||registry_==address(0)||settlement_==address(0)||treasury_==address(0)||vaultDeployer_==address(0)||registry_.code.length==0||settlement_.code.length==0||vaultDeployer_.code.length==0) revert InvalidConfig();
@@ -161,6 +162,7 @@ contract IndexioFactoryV25 is Ownable2Step {
 
     // ---------- index lifecycle ----------
     function launchIndex(string calldata name,string calldata symbol,address[] calldata assets,uint16[] calldata weights,uint256 initialSharePriceUsd18,uint16 distributionBps) external returns(address vault,address token) {
+        if(!bootstrapFinalized) revert BootstrapClosed();
         uint256 n=assets.length;
         if(bytes(name).length==0||bytes(name).length>64||bytes(symbol).length==0||bytes(symbol).length>12) revert InvalidConfig();
         if(n<2||n>MAX_ASSETS||n!=weights.length) revert InvalidComposition();
@@ -194,6 +196,8 @@ contract IndexioFactoryV25 is Ownable2Step {
         IndexioVaultV25(vault).setPauseState(deposits,income,rebalance,reinvestment);
     }
     function closeVault(address vault) external onlyOwner { if(!isIndexVault[vault]) revert InvalidConfig(); IndexioVaultV25(vault).close(); emit VaultClosed(vault); }
+    /// @notice Recover only unrelated ERC-20s accidentally sent to a vault; destination is fixed to the current fee treasury.
+    function recoverVaultAccidentalToken(address vault,address token,uint256 amount) external onlyOwner { if(!isIndexVault[vault]||token==address(0)||amount==0) revert InvalidConfig(); address recipient=feeTreasury; if(recipient==address(0)) revert InvalidTreasury(); IndexioVaultV25(vault).recoverAccidentalToken(token,recipient,amount); emit VaultAccidentalTokenRecovered(vault,token,recipient,amount); }
     function vaultCount() external view returns(uint256){ return allVaults.length; }
 
     // ---------- internal ----------
