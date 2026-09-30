@@ -11,7 +11,8 @@
     "compile:scanarc": "node scripts/compile-scanarc-router.mjs",
     "compile:bridge": "node scripts/compile-scanarc-bridge.mjs",
     "compile:indexio": "node scripts/compile-indexio.mjs && node scripts/compile-indexio-adapter.mjs",
-    "compile:indexio-adapter": "node scripts/compile-indexio-adapter.mjs"
+    "compile:indexio-adapter": "node scripts/compile-indexio-adapter.mjs",
+    "compile:indexio-v25": "node scripts/compile-indexio-v25.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
