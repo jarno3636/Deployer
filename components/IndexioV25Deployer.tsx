@@ -91,6 +91,7 @@ export function IndexioV25Deployer() {
   const [notice,setNotice] = useState<string|null>(null);
   const [mainnetAccepted,setMainnetAccepted] = useState(false);
   const [wired,setWired] = useState(false);
+  const [wiringProgress,setWiringProgress] = useState<string[]>([]);
   const [routesConfigured,setRoutesConfigured] = useState(false);
   const [smokeAccepted,setSmokeAccepted] = useState(false);
   const [target,setTarget] = useState('');
@@ -164,7 +165,86 @@ export function IndexioV25Deployer() {
     return hash;
   }
 
-  async function bootstrapWire(){setError(null);setBusy('wire');try{ready();for(const k of ORDER)if(!addresses[k]||verified[k]!=='verified')throw new Error(`Verify ${LABEL[k]} first.`);const f=addresses.factory!;await write(f,factoryAdminAbi,'setExecutionRouter',[addresses.executionRouter!,true]);await write(f,factoryAdminAbi,'setRebalanceRouter',[addresses.rebalanceRouter!,true]);await write(f,factoryAdminAbi,'setReinvestmentRouter',[addresses.reinvestmentRouter!,true]);await write(f,factoryAdminAbi,'setDefaultReinvestmentRouter',[addresses.reinvestmentRouter!]);await write(addresses.executionRouter!,routerAdminAbi,'setAdapter',[addresses.executionAdapter!,true]);await write(addresses.rebalanceRouter!,routerAdminAbi,'setAdapter',[addresses.rebalanceAdapter!,true]);await write(addresses.reinvestmentRouter!,routerAdminAbi,'setAdapter',[addresses.reinvestmentAdapter!,true]);setWired(true);setNotice('Factory roles, default reinvestment router, and dedicated adapters are wired in bootstrap mode.');}catch(e){setError(e instanceof Error?e.message:'Bootstrap wiring failed.');}finally{setBusy(null);}}
+  async function readCall<T>(contract: Address, abi: any, functionName: string, args: readonly unknown[] = []) {
+    if (!publicClient) throw new Error('Base client unavailable.');
+    return await publicClient.readContract({ address: contract, abi, functionName, args } as any) as T;
+  }
+
+  async function getWiringStatus() {
+    const f=addresses.factory, er=addresses.executionRouter, br=addresses.rebalanceRouter, rr=addresses.reinvestmentRouter;
+    const ea=addresses.executionAdapter, ba=addresses.rebalanceAdapter, ra=addresses.reinvestmentAdapter;
+    if(!f||!er||!br||!rr||!ea||!ba||!ra)throw new Error('All V2.5 contracts must be deployed first.');
+    const [executionApproved,rebalanceApproved,reinvestmentApproved,defaultRouter,executionAdapterApproved,rebalanceAdapterApproved,reinvestmentAdapterApproved] = await Promise.all([
+      readCall<boolean>(f,factoryAdminAbi,'isExecutionRouter',[er]),
+      readCall<boolean>(f,factoryAdminAbi,'isRebalanceRouter',[br]),
+      readCall<boolean>(f,factoryAdminAbi,'isReinvestmentRouter',[rr]),
+      readCall<Address>(f,factoryAdminAbi,'defaultReinvestmentRouter',[]),
+      readCall<boolean>(er,routerAdminAbi,'approvedAdapter',[ea]),
+      readCall<boolean>(br,routerAdminAbi,'approvedAdapter',[ba]),
+      readCall<boolean>(rr,routerAdminAbi,'approvedAdapter',[ra]),
+    ]);
+    return {
+      executionApproved, rebalanceApproved, reinvestmentApproved,
+      defaultRouterSet: defaultRouter.toLowerCase()===rr.toLowerCase(),
+      executionAdapterApproved, rebalanceAdapterApproved, reinvestmentAdapterApproved,
+    };
+  }
+
+  async function refreshWiringStatus(showNotice=true){
+    setError(null);setBusy('wire-check');
+    try{
+      ready();
+      const s=await getWiringStatus();
+      const rows=[
+        ['Execution Router approved',s.executionApproved],
+        ['Rebalance Router approved',s.rebalanceApproved],
+        ['Reinvestment Router approved',s.reinvestmentApproved],
+        ['Default Reinvestment Router set',s.defaultRouterSet],
+        ['Execution Adapter approved',s.executionAdapterApproved],
+        ['Rebalance Adapter approved',s.rebalanceAdapterApproved],
+        ['Reinvestment Adapter approved',s.reinvestmentAdapterApproved],
+      ] as const;
+      setWiringProgress(rows.map(([label,ok])=>`${ok?'✓':'○'} ${label}`));
+      const complete=rows.every(([,ok])=>ok);setWired(complete);
+      if(showNotice)setNotice(complete?'Bootstrap wiring is already complete onchain. No more wiring transactions are needed.':'Wiring status refreshed. Only missing permissions will be submitted.');
+      return {status:s,complete};
+    }catch(e){setError(e instanceof Error?e.message:'Could not read bootstrap wiring status.');return null;}finally{setBusy(null);}
+  }
+
+  async function bootstrapWire(){
+    setError(null);setBusy('wire');
+    try{
+      ready();
+      for(const k of ORDER)if(!addresses[k]||verified[k]!=='verified')throw new Error(`Verify ${LABEL[k]} first.`);
+      const f=addresses.factory!,er=addresses.executionRouter!,br=addresses.rebalanceRouter!,rr=addresses.reinvestmentRouter!;
+      const ea=addresses.executionAdapter!,ba=addresses.rebalanceAdapter!,ra=addresses.reinvestmentAdapter!;
+      let s=await getWiringStatus();
+      const steps:[string,()=>Promise<Hex>,keyof typeof s][]=[
+        ['Approve Execution Router',()=>write(f,factoryAdminAbi,'setExecutionRouter',[er,true]),'executionApproved'],
+        ['Approve Rebalance Router',()=>write(f,factoryAdminAbi,'setRebalanceRouter',[br,true]),'rebalanceApproved'],
+        ['Approve Reinvestment Router',()=>write(f,factoryAdminAbi,'setReinvestmentRouter',[rr,true]),'reinvestmentApproved'],
+        ['Set default Reinvestment Router',()=>write(f,factoryAdminAbi,'setDefaultReinvestmentRouter',[rr]),'defaultRouterSet'],
+        ['Approve Execution Adapter',()=>write(er,routerAdminAbi,'setAdapter',[ea,true]),'executionAdapterApproved'],
+        ['Approve Rebalance Adapter',()=>write(br,routerAdminAbi,'setAdapter',[ba,true]),'rebalanceAdapterApproved'],
+        ['Approve Reinvestment Adapter',()=>write(rr,routerAdminAbi,'setAdapter',[ra,true]),'reinvestmentAdapterApproved'],
+      ];
+      let sent=0;
+      for(const [label,send,key] of steps){
+        if(s[key])continue;
+        setNotice(`${label} — confirm this transaction in your wallet. ${sent} new wiring transaction${sent===1?'':'s'} completed this run.`);
+        await send();sent++;
+        s=await getWiringStatus();
+        if(!s[key])throw new Error(`${label} transaction confirmed, but the expected onchain permission is still not set.`);
+      }
+      const rows=[
+        ['Execution Router approved',s.executionApproved],['Rebalance Router approved',s.rebalanceApproved],['Reinvestment Router approved',s.reinvestmentApproved],['Default Reinvestment Router set',s.defaultRouterSet],['Execution Adapter approved',s.executionAdapterApproved],['Rebalance Adapter approved',s.rebalanceAdapterApproved],['Reinvestment Adapter approved',s.reinvestmentAdapterApproved],
+      ] as const;
+      setWiringProgress(rows.map(([label,ok])=>`${ok?'✓':'○'} ${label}`));
+      const complete=rows.every(([,ok])=>ok);setWired(complete);
+      if(!complete)throw new Error('Bootstrap wiring stopped before all permissions were confirmed. Re-run it; completed steps will now be skipped.');
+      setNotice(sent===0?'Bootstrap wiring was already complete onchain. No transaction was sent.':`Bootstrap wiring complete. ${sent} missing transaction${sent===1?' was':'s were'} submitted; previously completed steps were skipped.`);
+    }catch(e){setError(e instanceof Error?e.message:'Bootstrap wiring failed.');}finally{setBusy(null);}
+  }
 
   async function configureRoutes(){setError(null);setBusy('routes');try{ready();if(!wired)throw new Error('Wire V2.5 first.');if(!isAddress(target)||!isAddress(spender)||!/^0x[0-9a-fA-F]{8}$/.test(selector))throw new Error('Enter reviewed target, spender, and 4-byte selector (0x + 8 hex chars).');for(const k of ['executionAdapter','rebalanceAdapter','reinvestmentAdapter'] as Kind[])await write(addresses[k]!,adapterAdminAbi,'setRoute',[getAddress(target),getAddress(spender),selector as Hex,true]);setRoutesConfigured(true);setNotice('Reviewed route tuple enabled on all three dedicated adapters.');}catch(e){setError(e instanceof Error?e.message:'Route configuration failed.');}finally{setBusy(null);}}
 
@@ -181,7 +261,7 @@ export function IndexioV25Deployer() {
 
     {ORDER.map((kind,i)=>{const a=addresses[kind];const v=verified[kind]||'idle';const canDeploy=previousReady(kind)&&!a;return <section className="card" key={kind}><div className="stepHead"><div className="stepNo">{String(i+3).padStart(2,'0')}</div><div><h2>{LABEL[kind]}</h2><p>{a?'Deployed. Verify source before moving to the next dependency.':'Deploys only after the previous dependency is confirmed.'}</p></div></div>{a?<><div className="contractBox"><span>ADDRESS</span><strong>{a}</strong></div>{hashes[kind]&&<a className="linkButton" href={explorerTx(hashes[kind]!)} target="_blank" rel="noreferrer">View deployment transaction</a>}<a className="linkButton" href={explorerAddress(a)} target="_blank" rel="noreferrer">Open contract on Blockscout</a><button className="primary" onClick={()=>verifyContract(kind)} disabled={busy===`verify:${kind}`||v==='verified'}>{busy===`verify:${kind}`?'Checking Blockscout…':v==='verified'?'Verified ✓':v==='pending'?'Check verification status':'Verify source on Blockscout'}</button>{verifyMessage[kind]&&<div className={`notice ${v==='error'?'error':''}`}><b>Blockscout</b><p>{verifyMessage[kind]}</p></div>}</>:<button className="primary deploy" onClick={()=>deploy(kind)} disabled={!canDeploy||!!busy}>Deploy {LABEL[kind]}</button>}</section>})}
 
-    <section className="card"><div className="stepHead"><div className="stepNo">11</div><div><h2>Bootstrap wiring</h2><p>Approves the three routers, sets the default Reinvestment Router, and binds each router to its dedicated adapter.</p></div></div><button className="primary" onClick={bootstrapWire} disabled={!ORDER.every(k=>verified[k]==='verified')||wired||!!busy}>{wired?'Bootstrap wiring complete ✓':'Wire V2.5 bootstrap permissions'}</button></section>
+    <section className="card"><div className="stepHead"><div className="stepNo">11</div><div><h2>Bootstrap wiring</h2><p>Seven one-time permissions are required. This screen now reads Base first and submits only the missing transactions, so it is safe to resume after an interruption.</p></div></div><button className="ghost" onClick={()=>refreshWiringStatus()} disabled={!ORDER.every(k=>verified[k]==='verified')||!!busy}>{busy==='wire-check'?'Reading Base…':'Check wiring status'}</button>{wiringProgress.length>0&&<div className="notice"><b>Onchain wiring status</b>{wiringProgress.map(x=><p key={x}>{x}</p>)}</div>}<button className="primary" onClick={bootstrapWire} disabled={!ORDER.every(k=>verified[k]==='verified')||wired||!!busy}>{busy==='wire'?'Wiring missing permissions…':wired?'Bootstrap wiring complete ✓':'Wire only missing permissions'}</button></section>
 
     <section className="card"><div className="stepHead"><div className="stepNo">12</div><div><h2>Reviewed swap route</h2><p>Use the exact LI.FI (or other reviewed) target + spender + selector tuple. V2.5 no longer gives arbitrary target/spender authority.</p></div></div><label className="field">Target<input value={target} onChange={e=>setTarget(e.target.value)} placeholder="0x…"/></label><label className="field">Spender<input value={spender} onChange={e=>setSpender(e.target.value)} placeholder="0x…"/></label><label className="field">Function selector<input value={selector} onChange={e=>setSelector(e.target.value)} placeholder="0x12345678"/></label><button className="primary" onClick={configureRoutes} disabled={!wired||routesConfigured||!!busy}>{routesConfigured?'Routes configured ✓':'Enable reviewed route on all adapters'}</button><div className="notice"><b>Do not finalize yet.</b> Run seed, buy, sell, rebalance, distribution, tiny-income reinvestment, normal reinvestment, pause/close, and recovery smoke tests first.</div><label className="check"><input type="checkbox" checked={smokeAccepted} onChange={e=>setSmokeAccepted(e.target.checked)}/><span>I completed the V2.5 smoke-test checklist against these exact deployed addresses and the results are green.</span></label></section>
 
