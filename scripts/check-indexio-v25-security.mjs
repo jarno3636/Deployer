@@ -12,6 +12,8 @@ const checks=[
  ['Vault rescue is Factory-only','contracts/indexio-v25/IndexioVaultV25.sol',/function recoverAccidentalToken[\s\S]*?external onlyFactory nonReentrant/],
  ['Vault rescue protects settlement token','contracts/indexio-v25/IndexioVaultV25.sol',/token==settlementToken/],
  ['Vault rescue protects constituents','contracts/indexio-v25/IndexioVaultV25.sol',/_isConstituent\(token\)/],
+ ['Vault rescue protects its own share token','contracts/indexio-v25/IndexioVaultV25.sol',/token==address\(shareToken\)/],
+ ['Reinvestment skips zero allocations safely','contracts/indexio-v25/IndexioReinvestmentRouterV25.sol',/if\(amountIn==0\)\{if\(leg\.adapter!=address\(0\).*continue;/],
  ['Factory rescue destination is treasury','contracts/indexio-v25/IndexioFactoryV25.sol',/recoverVaultAccidentalToken[\s\S]*?recipient=feeTreasury/],
  ['Execution rescue protects settlement token','contracts/indexio-v25/IndexioExecutionRouterV25.sol',/recoverAccidentalToken[\s\S]*?token==settlementToken/],
  ['Reinvestment rescue protects settlement token','contracts/indexio-v25/IndexioReinvestmentRouterV25.sol',/recoverAccidentalToken[\s\S]*?token==settlementToken/],
