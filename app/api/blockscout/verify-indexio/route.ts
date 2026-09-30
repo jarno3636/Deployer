@@ -16,6 +16,7 @@ const CONTRACTS = {
   factory: 'contracts/indexio/IndexioFactory.sol:IndexioFactory',
   executionRouter: 'contracts/indexio/IndexioExecutionRouter.sol:IndexioExecutionRouter',
   rebalanceRouter: 'contracts/indexio/IndexioRebalanceRouter.sol:IndexioRebalanceRouter',
+  reinvestmentRouter: 'contracts/indexio/IndexioReinvestmentRouter.sol:IndexioReinvestmentRouter',
 } as const;
 
 type ContractKind = keyof typeof CONTRACTS;
