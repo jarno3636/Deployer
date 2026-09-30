@@ -14,7 +14,8 @@
     "compile:indexio-adapter": "node scripts/compile-indexio-adapter.mjs",
     "compile:indexio-v25": "node scripts/compile-indexio-v25.mjs",
     "check:indexio-v25": "node scripts/check-indexio-v25-security.mjs",
-    "release:indexio-v25": "npm run check:indexio-v25 && npm run compile:indexio-v25 && npm run build"
+    "release:indexio-v25": "npm run check:indexio-v25 && npm run compile:indexio-v25 && npm run build",
+    "test:indexio-v25": "forge test --match-path test/IndexioV25Regression.t.sol -vv"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
