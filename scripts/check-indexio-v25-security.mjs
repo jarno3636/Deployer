@@ -7,6 +7,7 @@ const checks=[
  ['Adapter binds target+spender+selector','contracts/indexio-v25/IndexioRestrictedSwapAdapterV25.sol',/routeKey\(address target,address spender,bytes4 selector\)/],
  ['Adapter route additions delayed','contracts/indexio-v25/IndexioRestrictedSwapAdapterV25.sol',/ALLOWLIST_DELAY=6 hours[\s\S]*proposeRoute[\s\S]*activateRoute/],
  ['Execution slippage cap','contracts/indexio-v25/IndexioExecutionRouterV25.sol',/MAX_SLIPPAGE_BPS = 500[\s\S]*_validateSlippage/],
+ ['Seed-25 replacement keeps 5% slippage cap','contracts/indexio-v25/IndexioExecutionRouterV25Seed25.sol',/MIN_GROSS_SEED_USD18 = 25e18[\s\S]*MAX_SLIPPAGE_BPS = 500[\s\S]*_validateSlippage/],
  ['Rebalance slippage cap','contracts/indexio-v25/IndexioRebalanceRouterV25.sol',/MAX_SLIPPAGE_BPS=500/],
  ['Reinvestment slippage cap','contracts/indexio-v25/IndexioReinvestmentRouterV25.sol',/MAX_SLIPPAGE_BPS=500/],
  ['Vault rescue is Factory-only','contracts/indexio-v25/IndexioVaultV25.sol',/function recoverAccidentalToken[\s\S]*?external onlyFactory nonReentrant/],
