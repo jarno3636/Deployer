@@ -53,18 +53,21 @@ const factoryAdminAbi = parseAbi([
   'function isReinvestmentRouter(address) view returns (bool)',
   'function defaultReinvestmentRouter() view returns (address)',
   'function bootstrapFinalized() view returns (bool)',
+  'function owner() view returns (address)',
   'function finalizeBootstrap()',
 ]);
 const routerAdminAbi = parseAbi([
   'function setAdapter(address adapter,bool approved)',
   'function approvedAdapter(address) view returns (bool)',
   'function bootstrapFinalized() view returns (bool)',
+  'function owner() view returns (address)',
   'function finalizeBootstrap()',
 ]);
 const adapterAdminAbi = parseAbi([
   'function setRoute(address target,address spender,bytes4 selector,bool allowed)',
   'function allowedRoute(bytes32) view returns (bool)',
   'function bootstrapFinalized() view returns (bool)',
+  'function owner() view returns (address)',
   'function finalizeBootstrap()',
 ]);
 function explorerAddress(a: string) { return `${EXPLORER}/address/${a}`; }
@@ -97,6 +100,8 @@ export function IndexioV25Deployer() {
   const [routeCandidates,setRouteCandidates] = useState<Array<{target:Address;spender:Address;selector:Hex;tool:string;coverage:number;samples:string[]}>>([]);
   const [routeDiscovery,setRouteDiscovery] = useState<{assetsFound:number;assetsQuoted:number;failures:number}|null>(null);
   const [finalized,setFinalized] = useState<Record<string,boolean>>({});
+  const [finalizationOwners,setFinalizationOwners] = useState<Record<string,Address>>({});
+  const [copyStatus,setCopyStatus] = useState<string|null>(null);
 
   const owner = isAddress(ownerInput) ? getAddress(ownerInput) : null;
   const treasury = isAddress(treasuryInput) ? getAddress(treasuryInput) : null;
@@ -346,9 +351,91 @@ export function IndexioV25Deployer() {
     finally{setBusy(null);}
   }
 
-  async function finalizeOne(key:string,contract:Address,abi:any){setError(null);setBusy(`finalize:${key}`);try{ready();if(!smokeAccepted)throw new Error('Confirm the V2.5 smoke tests before finalization.');const routesOk=routesConfigured||await checkRouteApprovalStatus(routeCandidates,false);if(!routesOk)throw new Error('The reviewed route set is not active on all three adapters. Check route approval status first.');await write(contract,abi,'finalizeBootstrap',[]);setFinalized(x=>({...x,[key]:true}));setNotice(`${key} bootstrap finalized permanently.`);}catch(e){setError(e instanceof Error?e.message:'Finalization failed.');}finally{setBusy(null);}}
+  async function getFinalizationStatus(){
+    const entries:[string,Address,any][]=[];
+    for(const k of ['executionAdapter','rebalanceAdapter','reinvestmentAdapter'] as Kind[]){if(addresses[k])entries.push([k,addresses[k]!,adapterAdminAbi]);}
+    for(const k of ['executionRouter','rebalanceRouter','reinvestmentRouter'] as Kind[]){if(addresses[k])entries.push([k,addresses[k]!,routerAdminAbi]);}
+    if(addresses.factory)entries.push(['factory',addresses.factory,factoryAdminAbi]);
+    const nextFinalized:Record<string,boolean>={};
+    const nextOwners:Record<string,Address>={};
+    for(const [key,contract,abi] of entries){
+      const [done,contractOwner]=await Promise.all([
+        readCall<boolean>(contract,abi,'bootstrapFinalized',[]),
+        readCall<Address>(contract,abi,'owner',[]),
+      ]);
+      nextFinalized[key]=done;
+      nextOwners[key]=getAddress(contractOwner);
+    }
+    setFinalized(x=>({...x,...nextFinalized}));
+    setFinalizationOwners(x=>({...x,...nextOwners}));
+    return {finalized:nextFinalized,owners:nextOwners};
+  }
+
+  async function refreshFinalizationStatus(showNotice=true){
+    setError(null);setBusy('finalization-check');
+    try{
+      const s=await getFinalizationStatus();
+      if(showNotice)setNotice('Finalization status refreshed directly from Base. Already-finalized contracts will not send another transaction.');
+      return s;
+    }catch(e){setError(e instanceof Error?e.message:'Could not read finalization status from Base.');return null;}
+    finally{setBusy(null);}
+  }
+
+  async function finalizeOne(key:string,contract:Address,abi:any){
+    setError(null);setBusy(`finalize:${key}`);
+    try{
+      ready();
+      if(!smokeAccepted)throw new Error('Confirm the V2.5 smoke tests before finalization.');
+      const routesOk=routesConfigured||await checkRouteApprovalStatus(routeCandidates,false);
+      if(!routesOk)throw new Error('The reviewed route set is not active on all three adapters. Check route approval status first.');
+      const alreadyDone=await readCall<boolean>(contract,abi,'bootstrapFinalized',[]);
+      const contractOwner=getAddress(await readCall<Address>(contract,abi,'owner',[]));
+      setFinalizationOwners(x=>({...x,[key]:contractOwner}));
+      if(alreadyDone){setFinalized(x=>({...x,[key]:true}));setNotice(`${LABEL[key as Kind]||'Factory'} is already finalized onchain. No transaction was sent.`);return;}
+      if(!address||contractOwner.toLowerCase()!==address.toLowerCase())throw new Error(`Connected wallet is not the owner of ${LABEL[key as Kind]||'Factory'}. Owner is ${contractOwner}.`);
+      await write(contract,abi,'finalizeBootstrap',[]);
+      const confirmed=await readCall<boolean>(contract,abi,'bootstrapFinalized',[]);
+      if(!confirmed)throw new Error('Finalization transaction confirmed but bootstrapFinalized is still false.');
+      setFinalized(x=>({...x,[key]:true}));
+      setNotice(`${LABEL[key as Kind]||'Factory'} bootstrap finalized permanently.`);
+    }catch(e){setError(e instanceof Error?e.message:'Finalization failed.');}
+    finally{setBusy(null);}
+  }
   const adaptersDone=['executionAdapter','rebalanceAdapter','reinvestmentAdapter'].every(k=>finalized[k]);
   const routersDone=['executionRouter','rebalanceRouter','reinvestmentRouter'].every(k=>finalized[k]);
+
+  const deploymentRecord = useMemo(()=>{
+    const lines=[
+      'INDEXIO V2.5 — BASE MAINNET DEPLOYMENT RECORD',
+      `Asset Registry (reused): ${EXISTING_ASSET_REGISTRY}`,
+      `USDC: ${BASE_USDC}`,
+      `Protocol Owner: ${ownerInput||'—'}`,
+      `Fee Treasury (1% protocol fee recipient): ${treasuryInput||'—'}`,
+      '',
+      ...ORDER.map(k=>`${LABEL[k]}: ${addresses[k]||'NOT DEPLOYED'}`),
+      '',
+      'REVIEWED ROUTES',
+      ...(routeCandidates.length?routeCandidates.flatMap((r,i)=>[
+        `Route ${i+1}: ${r.tool}`,
+        `  Target: ${r.target}`,
+        `  Spender: ${r.spender}`,
+        `  Selector: ${r.selector}`,
+        `  Quote coverage: ${r.coverage}`,
+      ]):['No reviewed route set loaded']),
+      '',
+      'FINALIZATION STATUS',
+      ...(['executionAdapter','rebalanceAdapter','reinvestmentAdapter','executionRouter','rebalanceRouter','reinvestmentRouter','factory'] as string[]).map(k=>{
+        const label=k==='factory'?'Factory':LABEL[k as Kind];
+        const ownerLine=finalizationOwners[k]?` · owner ${finalizationOwners[k]}`:'';
+        return `${label}: ${finalized[k]?'FINALIZED':'OPEN'}${ownerLine}`;
+      }),
+    ];
+    return lines.join('\n');
+  },[addresses,ownerInput,treasuryInput,routeCandidates,finalized,finalizationOwners]);
+
+  async function copyDeploymentRecord(){
+    try{await navigator.clipboard.writeText(deploymentRecord);setCopyStatus('Copied deployment record ✓');setTimeout(()=>setCopyStatus(null),2500);}catch{setCopyStatus('Copy failed — press and hold the record below to copy manually.');}
+  }
 
   return <main className="shell">
     <section className="hero"><div className="brandRow"><div className="mark">I</div><div><div className="eyebrow">INDEXIO V2.5</div><div className="networkPill"><i/>Base mainnet deployment center</div></div></div><h1>Deploy V2.5 safely, in order.</h1><p>This flow reuses the existing Asset Registry, deploys only the new V2.5 stack, verifies every contract on Base Blockscout, wires bootstrap permissions, then finalizes authority in the safe order.</p></section>
@@ -363,7 +450,9 @@ export function IndexioV25Deployer() {
 
     <section className="card"><div className="stepHead"><div className="stepNo">12</div><div><h2>Discover & approve Indexio routes</h2><p>The deployer discovers currently enabled assets from your existing Asset Registry, requests live Base LI.FI quotes in both directions, deduplicates the exact target + spender + selector tuples, and keeps only routes backed by LI.FI's current official Base deployment/allowlist data.</p></div></div><button className="secondary" onClick={discoverLifiRoutes} disabled={!wired||!!busy}>{busy==='lifi-discover'?'Scanning registry & LI.FI routes…':'Discover & review Indexio routes'}</button>{routeDiscovery&&<div className="notice"><b>Discovery summary</b><p>{routeDiscovery.assetsFound} enabled registry assets found · {routeDiscovery.assetsQuoted} assets produced at least one live quote · {routeDiscovery.failures} quote attempts unavailable.</p></div>}{routeCandidates.length>0&&<div className="notice"><b>{routeCandidates.length} unique trusted tuple{routeCandidates.length===1?'':'s'} to approve</b>{routeCandidates.map((r,i)=><p key={`${r.target}:${r.spender}:${r.selector}`}><strong>{i+1}. {r.tool}</strong> · {r.selector} · coverage {r.coverage} quote{r.coverage===1?'':'s'}<br/>{r.target}<br/>{r.spender}</p>)}</div>}<button className="ghost" onClick={refreshRouteApprovalStatus} disabled={!wired||!routeCandidates.length||!!busy}>{busy==='route-check'?'Reading adapter permissions…':'Check route approval status'}</button><button className="primary" onClick={configureDiscoveredRoutes} disabled={!wired||!routeCandidates.length||routesConfigured||!!busy}>{busy==='routes'?'Approving only missing route permissions…':routesConfigured?'Reviewed route set configured ✓':'Approve reviewed route set on all adapters'}</button><div className="notice"><b>Safety behavior.</b> Discovery does not execute swaps. It uses live quotes only to identify the routes Indexio actually needs. Re-running this step is safe: already-approved tuples are read from Base and skipped. After bootstrap, any genuinely new route still requires the adapter's 6-hour timelock.</div><div className="notice"><b>Do not finalize yet.</b> Run seed, buy, sell, rebalance, distribution, tiny-income reinvestment, normal reinvestment, pause/close, and recovery smoke tests first.</div><label className="check"><input type="checkbox" checked={smokeAccepted} onChange={e=>setSmokeAccepted(e.target.checked)}/><span>I completed the V2.5 smoke-test checklist against these exact deployed addresses and the results are green.</span></label></section>
 
-    <section className="card"><div className="stepHead"><div className="stepNo">13</div><div><h2>Irreversible finalization</h2><p>Finalize adapters first, then routers, then the Factory last. The Factory remains closed to public index launches until the final step.</p></div></div>{(['executionAdapter','rebalanceAdapter','reinvestmentAdapter'] as Kind[]).map(k=><button key={k} className="ghost" onClick={()=>finalizeOne(k,addresses[k]!,adapterAdminAbi)} disabled={!routesConfigured||!smokeAccepted||!addresses[k]||finalized[k]||!!busy}>{finalized[k]?`${LABEL[k]} finalized ✓`:`Finalize ${LABEL[k]}`}</button>)}{(['executionRouter','rebalanceRouter','reinvestmentRouter'] as Kind[]).map(k=><button key={k} className="ghost" onClick={()=>finalizeOne(k,addresses[k]!,routerAdminAbi)} disabled={!adaptersDone||!addresses[k]||finalized[k]||!!busy}>{finalized[k]?`${LABEL[k]} finalized ✓`:`Finalize ${LABEL[k]}`}</button>)}<button className="secondary" onClick={()=>finalizeOne('factory',addresses.factory!,factoryAdminAbi)} disabled={!routersDone||!addresses.factory||finalized.factory||!!busy}>{finalized.factory?'Factory finalized — V2.5 live ✓':'FINALIZE FACTORY LAST'}</button></section>
+    <section className="card"><div className="stepHead"><div className="stepNo">13</div><div><h2>Irreversible finalization</h2><p>Onchain state is authoritative. Refresh first; already-finalized contracts are marked automatically and will never submit a duplicate finalization transaction.</p></div></div><button className="secondary" onClick={()=>refreshFinalizationStatus()} disabled={!!busy}>{busy==='finalization-check'?'Reading Base…':'Refresh finalization status'}</button>{(['executionAdapter','rebalanceAdapter','reinvestmentAdapter'] as Kind[]).map(k=><div key={k}><div className="contractBox"><span>{LABEL[k].toUpperCase()}</span><strong>{finalized[k]?'FINALIZED ✓':'OPEN'}{finalizationOwners[k]?` · owner ${finalizationOwners[k]}`:''}</strong></div><button className="ghost" onClick={()=>finalizeOne(k,addresses[k]!,adapterAdminAbi)} disabled={!routesConfigured||!smokeAccepted||!addresses[k]||finalized[k]||!!busy}>{finalized[k]?`${LABEL[k]} finalized ✓`:`Finalize ${LABEL[k]}`}</button></div>)}{(['executionRouter','rebalanceRouter','reinvestmentRouter'] as Kind[]).map(k=><div key={k}><div className="contractBox"><span>{LABEL[k].toUpperCase()}</span><strong>{finalized[k]?'FINALIZED ✓':'OPEN'}{finalizationOwners[k]?` · owner ${finalizationOwners[k]}`:''}</strong></div><button className="ghost" onClick={()=>finalizeOne(k,addresses[k]!,routerAdminAbi)} disabled={!adaptersDone||!addresses[k]||finalized[k]||!!busy}>{finalized[k]?`${LABEL[k]} finalized ✓`:`Finalize ${LABEL[k]}`}</button></div>)}<div className="contractBox"><span>FACTORY</span><strong>{finalized.factory?'FINALIZED ✓':'OPEN'}{finalizationOwners.factory?` · owner ${finalizationOwners.factory}`:''}</strong></div><button className="secondary" onClick={()=>finalizeOne('factory',addresses.factory!,factoryAdminAbi)} disabled={!routersDone||!addresses.factory||finalized.factory||!!busy}>{finalized.factory?'Factory finalized — V2.5 live ✓':'FINALIZE FACTORY LAST'}</button></section>
+
+    <section className="card"><div className="stepHead"><div className="stepNo">14</div><div><h2>Deployment record</h2><p>Copy this after setup so you have one clean record of the complete V2.5 deployment, governance addresses, route permissions, and finalization state.</p></div></div><button className="primary" onClick={copyDeploymentRecord}>Copy complete deployment record</button>{copyStatus&&<div className="notice"><b>{copyStatus}</b></div>}<pre className="contractBox" style={{whiteSpace:'pre-wrap',wordBreak:'break-word',fontFamily:'monospace'}}>{deploymentRecord}</pre></section>
 
     {notice&&<div className="notice success strong">{notice}</div>}{error&&<div className="card error"><b>Action stopped safely</b><p>{error}</p></div>}
     <footer>V2.5 registry reuse: {EXISTING_ASSET_REGISTRY}. Base USDC: {BASE_USDC}. Verification pending is not a reason to redeploy; recheck the same address instead.</footer>
