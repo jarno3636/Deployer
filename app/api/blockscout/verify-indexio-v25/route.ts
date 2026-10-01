@@ -19,6 +19,10 @@ const CONTRACTS = {
     fq: 'contracts/indexio-v25/IndexioExecutionRouterV25.sol:IndexioExecutionRouterV25',
     name: 'IndexioExecutionRouterV25',
   },
+  executionRouterSeed25: {
+    fq: 'contracts/indexio-v25/IndexioExecutionRouterV25Seed25.sol:IndexioExecutionRouterV25Seed25',
+    name: 'IndexioExecutionRouterV25Seed25',
+  },
   rebalanceRouter: {
     fq: 'contracts/indexio-v25/IndexioRebalanceRouterV25.sol:IndexioRebalanceRouterV25',
     name: 'IndexioRebalanceRouterV25',
