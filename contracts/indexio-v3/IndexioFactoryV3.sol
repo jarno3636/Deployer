@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
+import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 interface IRegistryV3 { function requireAsset(address asset,uint16 weight) external view returns(uint8); }
 /// @notice Permissionless V3 factory registry. No bootstrap, activation, or deployment time gates.
