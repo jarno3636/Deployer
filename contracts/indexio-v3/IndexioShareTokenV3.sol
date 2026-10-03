@@ -2,7 +2,6 @@
 pragma solidity ^0.8.30;
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {ERC20Permit} from "@openzeppelin/contracts/token/ERC20/extensions/ERC20Permit.sol";
-import {Nonces} from "@openzeppelin/contracts/utils/Nonces.sol";
 interface IIncomeSyncV3 { function syncTransfer(address,address,uint256,uint256,uint256,uint256) external; }
 /// @notice Indexio shares use direct historical balance checkpoints: one historical share = one vote.
 contract IndexioShareTokenV3 is ERC20,ERC20Permit {
@@ -27,5 +26,4 @@ contract IndexioShareTokenV3 is ERC20,ERC20Permit {
     }
     function _write(Checkpoint[] storage a,uint256 value) private {require(value<=type(uint208).max,"checkpoint overflow");uint48 b=uint48(block.number);uint256 n=a.length;if(n>0&&a[n-1].fromBlock==b)a[n-1].value=uint208(value);else a.push(Checkpoint(b,uint208(value)));}
     function _lookup(Checkpoint[] storage a,uint256 blockNumber) private view returns(uint256){uint256 lo;uint256 hi=a.length;while(lo<hi){uint256 mid=(lo+hi)/2;if(a[mid].fromBlock>blockNumber)hi=mid;else lo=mid+1;}return hi==0?0:a[hi-1].value;}
-    function nonces(address owner) public view override(ERC20Permit,Nonces) returns(uint256){return super.nonces(owner);}
 }
