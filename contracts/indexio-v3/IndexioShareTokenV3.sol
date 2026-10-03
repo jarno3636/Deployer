@@ -13,6 +13,7 @@ contract IndexioShareTokenV3 is ERC20,ERC20Permit {
     function setIncomeHub(address h) external {require(msg.sender==vault&&incomeHub==address(0)&&h.code.length>0,"hub");incomeHub=h;}
     function mint(address to,uint256 amount) external {require(msg.sender==vault,"vault");_mint(to,amount);}
     function burn(address from,uint256 amount) external {require(msg.sender==vault,"vault");_burn(from,amount);}
+    function burnFromAuthorized(address from,address spender,uint256 amount) external {require(msg.sender==vault,"vault");_spendAllowance(from,spender,amount);_burn(from,amount);}
     function getPastVotes(address account,uint256 blockNumber) external view returns(uint256){require(blockNumber<block.number,"future");return _lookup(_balanceCheckpoints[account],blockNumber);}
     function getPastTotalSupply(uint256 blockNumber) external view returns(uint256){require(blockNumber<block.number,"future");return _lookup(_supplyCheckpoints,blockNumber);}
     function checkpoints(address account) external view returns(Checkpoint[] memory){return _balanceCheckpoints[account];}
