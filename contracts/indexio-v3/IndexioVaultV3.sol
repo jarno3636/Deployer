@@ -34,7 +34,6 @@ contract IndexioVaultV3 is ReentrancyGuard {
 
     address public immutable factory;
     address public immutable creator;
-    address public immutable componentInitializer;
     uint16 public immutable creatorFeeBps;
     uint256 public immutable initialSharePriceUsd18;
 
@@ -57,31 +56,26 @@ contract IndexioVaultV3 is ReentrancyGuard {
 
     modifier ready(){require(initialized,"not initialized");_;}
 
-    constructor(address f,address c,address[] memory a,uint16[] memory w,uint16 cf,uint256 initialPrice){
-        require(f.code.length>0&&c!=address(0)&&cf<=100&&initialPrice>0,"config");
+    constructor(address f,address c,string memory n,string memory s,address[] memory a,uint16[] memory w,uint16 cf,uint16 rewardBps,uint256 initialPrice){
+        require(f.code.length>0&&c!=address(0)&&bytes(n).length>0&&bytes(s).length>0&&cf<=100&&rewardBps<=2000&&initialPrice>0,"config");
         factory=f;
         creator=c;
-        componentInitializer=msg.sender;
         creatorFeeBps=cf;
         initialSharePriceUsd18=initialPrice;
         _validate(a,w);
         _assets=a;
         _weights=w;
         for(uint256 i;i<a.length;i++)historicalAsset[a[i]]=true;
-    }
 
-    function initializeComponents(address share,address hub,address gov,uint16 rewardBps) external {
-        require(msg.sender==componentInitializer&&!initialized,"initializer");
-        require(share.code.length>0&&hub.code.length>0&&gov.code.length>0,"components");
-        require(IShareIdentityV3(share).vault()==address(this),"share identity");
-        require(IIncomeIdentityV3(hub).vault()==address(this)&&IIncomeIdentityV3(hub).shareToken()==share&&IIncomeIdentityV3(hub).creator()==creator&&IIncomeIdentityV3(hub).creatorIncomeRewardBps()==rewardBps,"hub identity");
-        require(IGovernorIdentityV3(gov).vault()==address(this)&&IGovernorIdentityV3(gov).token()==share,"governor identity");
-        shareToken=IndexioShareTokenV3(share);
-        incomeHub=IndexioIncomeHubV3(hub);
-        governor=IndexioGovernorV3(gov);
-        shareToken.setIncomeHub(hub);
+        IndexioShareTokenV3 share=new IndexioShareTokenV3(n,s,address(this));
+        IndexioIncomeHubV3 hub=new IndexioIncomeHubV3(address(this),address(share),c,rewardBps);
+        IndexioGovernorV3 gov=new IndexioGovernorV3(address(this),address(share));
+        shareToken=share;
+        incomeHub=hub;
+        governor=gov;
+        share.setIncomeHub(address(hub));
         initialized=true;
-        emit ComponentsInitialized(share,hub,gov);
+        emit ComponentsInitialized(address(share),address(hub),address(gov));
     }
 
     function assets() external view returns(address[] memory){return _assets;}

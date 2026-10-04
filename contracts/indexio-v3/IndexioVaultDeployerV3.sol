@@ -56,6 +56,7 @@ contract IndexioVaultDeployerV3 is Ownable {
         require(vault!=address(0)&&vault.code.length>0,"deploy failed");
         IVaultIdentityV3 v=IVaultIdentityV3(vault);
         require(v.factory()==canonicalFactory&&v.creator()==msg.sender&&v.creatorFeeBps()==creatorFeeBps&&v.initialSharePriceUsd18()==initialSharePriceUsd18,"vault identity");
+        require(v.shareToken()!=address(0)&&v.incomeHub()!=address(0)&&v.governor()!=address(0),"components");
         IFactoryRegisterV3(canonicalFactory).registerVault(vault,msg.sender,creatorFeeBps,creatorIncomeRewardBps,initialSharePriceUsd18);
         emit VaultDeployed(canonicalFactory,msg.sender,vault,v.shareToken(),v.incomeHub(),v.governor(),initialSharePriceUsd18);
     }
