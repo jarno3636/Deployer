@@ -1,14 +1,71 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
+
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
-import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-interface IRouterFactoryV3 {function factory() external view returns(address);} interface IFactoryLockV3 {function executionRouterLocked() external view returns(bool);}
-contract IndexioRestrictedSwapAdapterV3 is Ownable2Step,ReentrancyGuard {using SafeERC20 for IERC20;uint256 public constant MAX_ROUTE_DATA_BYTES=16_384;address public immutable callerRouter;mapping(bytes32=>bool) public allowedRoute;uint256 public allowedRouteCount;event RouteSet(address indexed target,address indexed spender,bytes4 indexed selector,bool allowed);event SwapExecuted(address indexed tokenIn,address indexed tokenOut,address indexed recipient,uint256 amountIn,uint256 amountOut,address target,address spender,bytes4 selector);
-constructor(address guardian,address router) Ownable(guardian){require(guardian!=address(0)&&router.code.length>0,"config");callerRouter=router;}
-function routeKey(address target,address spender,bytes4 selector) public pure returns(bytes32){return keccak256(abi.encode(target,spender,selector));}
-function setRoute(address target,address spender,bytes4 selector,bool allowed) external onlyOwner {require(target!=address(0)&&spender!=address(0)&&selector!=bytes4(0),"route");if(allowed){require(target.code.length>0&&spender.code.length>0,"code");address f=IRouterFactoryV3(callerRouter).factory();require(!IFactoryLockV3(f).executionRouterLocked(),"additions locked");}bytes32 key=routeKey(target,spender,selector);bool old=allowedRoute[key];allowedRoute[key]=allowed;if(allowed&&!old)allowedRouteCount++;else if(!allowed&&old)allowedRouteCount--;emit RouteSet(target,spender,selector,allowed);}
-function swapExactInput(address tokenIn,address tokenOut,uint256 amountIn,uint256 minOut,address recipient,bytes calldata routeData) external nonReentrant returns(uint256 amountOut){require(msg.sender==callerRouter,"router");require(tokenIn!=address(0)&&tokenOut!=address(0)&&recipient!=address(0)&&tokenIn!=tokenOut&&amountIn>0&&minOut>0,"input");require(routeData.length>0&&routeData.length<=MAX_ROUTE_DATA_BYTES,"route data");(address target,address spender,bytes memory callData)=abi.decode(routeData,(address,address,bytes));require(callData.length>=4&&target.code.length>0&&spender.code.length>0,"route");bytes4 selector;assembly{selector:=mload(add(callData,32))}require(allowedRoute[routeKey(target,spender,selector)],"not allowed");uint256 inBefore=IERC20(tokenIn).balanceOf(address(this));require(inBefore==amountIn,"unexpected input balance");uint256 adapterOutBefore=IERC20(tokenOut).balanceOf(address(this));uint256 outBefore=IERC20(tokenOut).balanceOf(recipient);IERC20(tokenIn).forceApprove(spender,amountIn);(bool ok,)=target.call(callData);IERC20(tokenIn).forceApprove(spender,0);require(ok,"swap failed");require(IERC20(tokenIn).balanceOf(address(this))==0,"input not consumed");require(IERC20(tokenOut).balanceOf(address(this))==adapterOutBefore,"adapter output residue");amountOut=IERC20(tokenOut).balanceOf(recipient)-outBefore;require(amountOut>=minOut,"slippage");emit SwapExecuted(tokenIn,tokenOut,recipient,amountIn,amountOut,target,spender,selector);}
+
+/// @notice V3 swap adapter dedicated to the 0x Swap API v2 AllowanceHolder flow on Base.
+/// @dev For ERC20 swaps, 0x documents AllowanceHolder as both allowance target and transaction entry point.
+///      The offchain quote MUST be requested with taker=this adapter and recipient=the recipient supplied by Indexio.
+///      Indexio still enforces token pair, exact amountIn, minOut, quote/slippage bounds and transaction deadline.
+contract IndexioRestrictedSwapAdapterV3 is ReentrancyGuard {
+    using SafeERC20 for IERC20;
+
+    uint256 public constant MAX_ROUTE_DATA_BYTES = 16_384;
+    address public constant ZERO_X_ALLOWANCE_HOLDER = 0x0000000000001fF3684f28c67538d4D072C22734;
+    address public immutable callerRouter;
+
+    event SwapExecuted(
+        address indexed tokenIn,
+        address indexed tokenOut,
+        address indexed recipient,
+        uint256 amountIn,
+        uint256 amountOut
+    );
+
+    constructor(address router) {
+        require(block.chainid == 8453, "Base only");
+        require(router.code.length > 0, "router");
+        require(ZERO_X_ALLOWANCE_HOLDER.code.length > 0, "0x unavailable");
+        callerRouter = router;
+    }
+
+    function swapExactInput(
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minOut,
+        address recipient,
+        bytes calldata routeData
+    ) external nonReentrant returns (uint256 amountOut) {
+        require(msg.sender == callerRouter, "router");
+        require(
+            tokenIn != address(0) && tokenOut != address(0) && recipient != address(0) &&
+            tokenIn != tokenOut && amountIn > 0 && minOut > 0,
+            "input"
+        );
+        require(routeData.length >= 4 && routeData.length <= MAX_ROUTE_DATA_BYTES, "0x data");
+
+        uint256 inBefore = IERC20(tokenIn).balanceOf(address(this));
+        require(inBefore == amountIn, "unexpected input balance");
+        uint256 adapterOutBefore = IERC20(tokenOut).balanceOf(address(this));
+        uint256 outBefore = IERC20(tokenOut).balanceOf(recipient);
+
+        // Never grant a passive/unlimited approval. 0x receives only this swap's exact input amount.
+        IERC20(tokenIn).forceApprove(ZERO_X_ALLOWANCE_HOLDER, amountIn);
+        (bool ok, bytes memory ret) = ZERO_X_ALLOWANCE_HOLDER.call(routeData);
+        IERC20(tokenIn).forceApprove(ZERO_X_ALLOWANCE_HOLDER, 0);
+        if (!ok) {
+            if (ret.length > 0) assembly { revert(add(ret, 32), mload(ret)) }
+            revert("0x swap failed");
+        }
+
+        require(IERC20(tokenIn).balanceOf(address(this)) == 0, "input not consumed");
+        require(IERC20(tokenOut).balanceOf(address(this)) == adapterOutBefore, "adapter output residue");
+        amountOut = IERC20(tokenOut).balanceOf(recipient) - outBefore;
+        require(amountOut >= minOut, "slippage");
+
+        emit SwapExecuted(tokenIn, tokenOut, recipient, amountIn, amountOut);
+    }
 }
