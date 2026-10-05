@@ -24,6 +24,7 @@ interface IIncomeIdentityV3 {
     function shareToken() external view returns(address);
     function creator() external view returns(address);
     function creatorIncomeRewardBps() external view returns(uint16);
+    function distributionBps() external view returns(uint16);
 }
 interface IGovernorIdentityV3 { function vault() external view returns(address); function token() external view returns(address); }
 
@@ -35,6 +36,7 @@ contract IndexioVaultV3 is ReentrancyGuard {
     address public immutable factory;
     address public immutable creator;
     uint16 public immutable creatorFeeBps;
+    uint16 public immutable distributionBps;
     uint256 public immutable initialSharePriceUsd18;
 
     IndexioShareTokenV3 public shareToken;
@@ -56,11 +58,12 @@ contract IndexioVaultV3 is ReentrancyGuard {
 
     modifier ready(){require(initialized,"not initialized");_;}
 
-    constructor(address f,address c,string memory n,string memory s,address[] memory a,uint16[] memory w,uint16 cf,uint16 rewardBps,uint256 initialPrice){
-        require(f.code.length>0&&c!=address(0)&&bytes(n).length>0&&bytes(s).length>0&&cf<=100&&rewardBps<=2000&&initialPrice>0,"config");
+    constructor(address f,address c,string memory n,string memory s,address[] memory a,uint16[] memory w,uint16 cf,uint16 rewardBps,uint16 distributionBps_,uint256 initialPrice){
+        require(f.code.length>0&&c!=address(0)&&bytes(n).length>0&&bytes(s).length>0&&cf<=100&&rewardBps<=2000&&distributionBps_<=10_000&&initialPrice>0,"config");
         factory=f;
         creator=c;
         creatorFeeBps=cf;
+        distributionBps=distributionBps_;
         initialSharePriceUsd18=initialPrice;
         _validate(a,w);
         _assets=a;
@@ -68,7 +71,7 @@ contract IndexioVaultV3 is ReentrancyGuard {
         for(uint256 i;i<a.length;i++)historicalAsset[a[i]]=true;
 
         IndexioShareTokenV3 share=new IndexioShareTokenV3(n,s,address(this));
-        IndexioIncomeHubV3 hub=new IndexioIncomeHubV3(address(this),address(share),c,rewardBps);
+        IndexioIncomeHubV3 hub=new IndexioIncomeHubV3(address(this),address(share),c,rewardBps,distributionBps_);
         IndexioGovernorV3 gov=new IndexioGovernorV3(address(this),address(share));
         shareToken=share;
         incomeHub=hub;
@@ -202,6 +205,7 @@ contract IndexioVaultV3 is ReentrancyGuard {
         require(token.code.length>0,"token");
         bool ok=token==IFactoryV3(factory).settlementToken()||historicalAsset[token];
         require(ok,"unsupported income");
+        if(distributionBps<10_000){bool current;for(uint256 i;i<_assets.length;i++)if(token==_assets[i]){current=true;break;}require(current,"compound token not current asset");}
         incomeHub.notifyIncome(token);
     }
 

@@ -4,13 +4,14 @@ pragma solidity ^0.8.30;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
 interface IFactoryRegisterV3 {
-    function registerVault(address vault,address creator,uint16 creatorFeeBps,uint16 rewardBps,uint256 initialSharePriceUsd18) external;
+    function registerVault(address vault,address creator,uint16 creatorFeeBps,uint16 rewardBps,uint16 distributionBps,uint256 initialSharePriceUsd18) external;
     function vaultDeployer() external view returns(address);
 }
 interface IVaultIdentityV3 {
     function factory() external view returns(address);
     function creator() external view returns(address);
     function creatorFeeBps() external view returns(uint16);
+    function distributionBps() external view returns(uint16);
     function initialSharePriceUsd18() external view returns(uint256);
     function shareToken() external view returns(address);
     function incomeHub() external view returns(address);
@@ -27,7 +28,7 @@ contract IndexioVaultDeployerV3 is Ownable {
     bool public factoryLocked;
 
     event FactoryLocked(address indexed factory);
-    event VaultDeployed(address indexed factory,address indexed creator,address indexed vault,address shareToken,address incomeHub,address governor,uint256 initialSharePriceUsd18);
+    event VaultDeployed(address indexed factory,address indexed creator,address indexed vault,address shareToken,address incomeHub,address governor,uint16 distributionBps,uint256 initialSharePriceUsd18);
 
     constructor(address owner_,bytes32 creationCodeHash_,uint32 creationCodeLength_) Ownable(owner_) {
         require(owner_!=address(0),"owner");
@@ -44,9 +45,9 @@ contract IndexioVaultDeployerV3 is Ownable {
         emit FactoryLocked(factory);
     }
 
-    function deploy(bytes calldata initCode,string calldata name,string calldata symbol,address[] calldata assets,uint16[] calldata weights,uint16 creatorFeeBps,uint16 creatorIncomeRewardBps,uint256 initialSharePriceUsd18) external returns(address vault) {
+    function deploy(bytes calldata initCode,string calldata name,string calldata symbol,address[] calldata assets,uint16[] calldata weights,uint16 creatorFeeBps,uint16 creatorIncomeRewardBps,uint16 distributionBps,uint256 initialSharePriceUsd18) external returns(address vault) {
         require(factoryLocked&&initialSharePriceUsd18>0,"config");
-        bytes memory expectedArgs=abi.encode(canonicalFactory,msg.sender,name,symbol,assets,weights,creatorFeeBps,creatorIncomeRewardBps,initialSharePriceUsd18);
+        bytes memory expectedArgs=abi.encode(canonicalFactory,msg.sender,name,symbol,assets,weights,creatorFeeBps,creatorIncomeRewardBps,distributionBps,initialSharePriceUsd18);
         uint256 creationLength=uint256(vaultCreationCodeLength);
         require(initCode.length==creationLength+expectedArgs.length,"init length");
         require(keccak256(initCode[:creationLength])==vaultCreationCodeHash,"vault bytecode");
@@ -55,9 +56,9 @@ contract IndexioVaultDeployerV3 is Ownable {
         assembly ("memory-safe") { vault := create(0,add(code,0x20),mload(code)) }
         require(vault!=address(0)&&vault.code.length>0,"deploy failed");
         IVaultIdentityV3 v=IVaultIdentityV3(vault);
-        require(v.factory()==canonicalFactory&&v.creator()==msg.sender&&v.creatorFeeBps()==creatorFeeBps&&v.initialSharePriceUsd18()==initialSharePriceUsd18,"vault identity");
+        require(v.factory()==canonicalFactory&&v.creator()==msg.sender&&v.creatorFeeBps()==creatorFeeBps&&v.distributionBps()==distributionBps&&v.initialSharePriceUsd18()==initialSharePriceUsd18,"vault identity");
         require(v.shareToken()!=address(0)&&v.incomeHub()!=address(0)&&v.governor()!=address(0),"components");
-        IFactoryRegisterV3(canonicalFactory).registerVault(vault,msg.sender,creatorFeeBps,creatorIncomeRewardBps,initialSharePriceUsd18);
-        emit VaultDeployed(canonicalFactory,msg.sender,vault,v.shareToken(),v.incomeHub(),v.governor(),initialSharePriceUsd18);
+        IFactoryRegisterV3(canonicalFactory).registerVault(vault,msg.sender,creatorFeeBps,creatorIncomeRewardBps,distributionBps,initialSharePriceUsd18);
+        emit VaultDeployed(canonicalFactory,msg.sender,vault,v.shareToken(),v.incomeHub(),v.governor(),distributionBps,initialSharePriceUsd18);
     }
 }
