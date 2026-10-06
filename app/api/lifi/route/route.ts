@@ -48,7 +48,7 @@ export async function POST(req: NextRequest) {
     const data = await upstream.json().catch(() => null) as any;
     if (!upstream.ok) {
       const message = data?.message || data?.error?.message || data?.error || `LI.FI returned HTTP ${upstream.status}.`;
-      return NextResponse.json({ error: String(message) }, { status: upstream.status === 429 ? 429 : 502 });
+      return NextResponse.json({ error: String(message), details: String(message), upstreamStatus: upstream.status, direction, fromToken: direction === 'buy' ? BASE_USDC : toToken, toToken: direction === 'buy' ? toToken : BASE_USDC }, { status: upstream.status === 429 ? 429 : 502 });
     }
 
     const target = data?.transactionRequest?.to;
