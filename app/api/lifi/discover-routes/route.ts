@@ -16,7 +16,7 @@ const BASE_USDC = getAddress('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
 const ASSET_REGISTRY = getAddress('0x5C4791e3B752d9b084E8FD76932E82C2031f15c1');
 const LIFI_DEPLOYMENTS = 'https://raw.githubusercontent.com/lifinance/contracts/main/deployments/base.json';
 const LIFI_WHITELIST = 'https://raw.githubusercontent.com/lifinance/contracts/main/config/whitelist.json';
-const BLOCKSCOUT_LOGS = 'https://base.blockscout.com/api';
+const ETHERSCAN_V2 = 'https://api.etherscan.io/v2/api';
 const MAX_ASSETS = 60;
 
 const registryAbi = parseAbi([
@@ -47,31 +47,79 @@ function topic(sig: string) {
   return keccak256(stringToHex(sig));
 }
 
-async function blockscoutLogs(topic0: `0x${string}`) {
-  const q = new URLSearchParams({
-    module: 'logs',
-    action: 'getLogs',
-    address: ASSET_REGISTRY,
-    fromBlock: '0',
-    toBlock: 'latest',
-    topic0,
-    page: '1',
-    offset: '1000',
-  });
-  const r = await fetch(`${BLOCKSCOUT_LOGS}?${q.toString()}`, { cache: 'no-store', signal: AbortSignal.timeout(15000) });
-  const j = await r.json().catch(() => null) as any;
-  if (!r.ok || !j || (j.status !== '1' && !Array.isArray(j.result))) {
-    throw new Error(j?.message || 'Blockscout could not enumerate Asset Registry events.');
+async function rpcLogs(topic0: `0x${string}`) {
+  // Use the configured Base RPC first. This keeps registry discovery independent
+  // from explorer availability and reads the canonical onchain event history.
+  const logs = await publicClient.request({
+    method: 'eth_getLogs',
+    params: [{
+      address: ASSET_REGISTRY,
+      fromBlock: '0x0',
+      toBlock: 'latest',
+      topics: [topic0],
+    }],
+  } as any) as any[];
+  return Array.isArray(logs) ? logs : [];
+}
+
+async function etherscanLogs(topic0: `0x${string}`) {
+  const apiKey = process.env.ETHERSCAN_API_KEY;
+  if (!apiKey) throw new Error('Base RPC could not enumerate Asset Registry events and ETHERSCAN_API_KEY is not configured.');
+
+  const out: any[] = [];
+  // Etherscan V2 supports Base through chainid=8453. Page defensively in case
+  // the registry eventually exceeds a single response.
+  for (let page = 1; page <= 20; page++) {
+    const q = new URLSearchParams({
+      chainid: BASE_CHAIN_ID,
+      module: 'logs',
+      action: 'getLogs',
+      address: ASSET_REGISTRY,
+      fromBlock: '0',
+      toBlock: 'latest',
+      topic0,
+      page: String(page),
+      offset: '1000',
+      apikey: apiKey,
+    });
+    const r = await fetch(`${ETHERSCAN_V2}?${q.toString()}`, {
+      cache: 'no-store',
+      signal: AbortSignal.timeout(15000),
+    });
+    const j = await r.json().catch(() => null) as any;
+    if (!r.ok || !j) throw new Error(`Etherscan Asset Registry log lookup failed (${r.status}).`);
+    if (j.status === '0') {
+      const msg = String(j.result || j.message || '');
+      if (/no records found/i.test(msg)) break;
+      throw new Error(`Etherscan could not enumerate Asset Registry events: ${msg || 'unknown response'}`);
+    }
+    const rows = Array.isArray(j.result) ? j.result : [];
+    out.push(...rows);
+    if (rows.length < 1000) break;
   }
-  return Array.isArray(j.result) ? j.result : [];
+  return out;
+}
+
+async function registryLogs(topic0: `0x${string}`) {
+  try {
+    return await rpcLogs(topic0);
+  } catch (rpcError) {
+    try {
+      return await etherscanLogs(topic0);
+    } catch (etherscanError) {
+      const rpcMessage = rpcError instanceof Error ? rpcError.message : 'unknown RPC error';
+      const etherscanMessage = etherscanError instanceof Error ? etherscanError.message : 'unknown Etherscan error';
+      throw new Error(`Could not enumerate Asset Registry events from Base RPC or Etherscan. RPC: ${rpcMessage}. Etherscan: ${etherscanMessage}`);
+    }
+  }
 }
 
 async function discoverEnabledAssets() {
   const configuredTopic = topic('AssetConfigured(address,bool,uint16,uint8)');
   const disabledTopic = topic('AssetDisabled(address)');
   const [configured, disabled] = await Promise.all([
-    blockscoutLogs(configuredTopic),
-    blockscoutLogs(disabledTopic),
+    registryLogs(configuredTopic),
+    registryLogs(disabledTopic),
   ]);
 
   const seen = new Set<string>();
@@ -256,6 +304,7 @@ export async function POST(req: NextRequest) {
       hasMore: offset + assets.length < allAssets.length,
       assetsQuoted,
       failures,
+      registrySource: 'Base RPC with Etherscan V2 fallback',
       trustSource: 'LI.FI official deployments/base.json + config/whitelist.json',
       quoteDirections: ['USDC→asset', 'asset→USDC'],
       quoteSlippage: 0.005,
