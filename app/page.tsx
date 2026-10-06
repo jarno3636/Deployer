@@ -1,2 +1,2 @@
-import { IndexioV25Deployer } from '../components/IndexioV25Deployer';
-export default function Page(){ return <IndexioV25Deployer/>; }
+import { IndexioV32Deployer } from '../components/IndexioV32Deployer';
+export default function Page(){ return <IndexioV32Deployer/>; }
