@@ -161,33 +161,39 @@ export async function POST(req: NextRequest) {
     const body = await req.json().catch(() => null) as { fromAddress?: string } | null;
     if (!body?.fromAddress || !isAddress(body.fromAddress)) return NextResponse.json({ error: 'A valid deployment wallet address is required.' }, { status: 400 });
     const fromAddress = getAddress(body.fromAddress);
+    const rawOffset = Number((body as any)?.offset ?? 0);
+    const rawLimit = Number((body as any)?.limit ?? 8);
+    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0;
+    const limit = Number.isFinite(rawLimit) ? Math.min(10, Math.max(1, Math.floor(rawLimit))) : 8;
 
-    const [{ deploymentSet, whitelistSet, whitelistSelectors }, assets] = await Promise.all([
+    const [{ deploymentSet, whitelistSet, whitelistSelectors }, allAssets] = await Promise.all([
       trustedLifiAddresses(),
       discoverEnabledAssets(),
     ]);
 
+    const assets = allAssets.slice(offset, offset + limit);
     const hits: RouteHit[] = [];
     let failures = 0;
     let assetsQuoted = 0;
 
-    // Keep concurrency modest so the public LI.FI API and Base RPC are not hammered.
-    for (let i = 0; i < assets.length; i += 4) {
-      const batch = assets.slice(i, i + 4);
-      const results = await Promise.all(batch.map(async ({ asset, decimals }) => {
-        let ok = false;
-        const local: RouteHit[] = [];
-        try { local.push(await quote(BASE_USDC, asset, '10000000', fromAddress)); ok = true; } catch { failures++; }
-        try {
-          const whole = 10n ** BigInt(Math.min(Math.max(decimals, 0), 24));
-          local.push(await quote(asset, BASE_USDC, whole.toString(), fromAddress)); ok = true;
-        } catch { failures++; }
-        return { ok, local };
-      }));
-      for (const r of results) {
-        if (r.ok) assetsQuoted++;
-        hits.push(...r.local);
+    // One bounded page per request keeps Vercel well below its function timeout.
+    // Buy + sell are requested in parallel for each asset. The UI walks all pages.
+    const results = await Promise.all(assets.map(async ({ asset, decimals }) => {
+      const whole = 10n ** BigInt(Math.min(Math.max(decimals, 0), 24));
+      const settled = await Promise.allSettled([
+        quote(BASE_USDC, asset, '10000000', fromAddress),
+        quote(asset, BASE_USDC, whole.toString(), fromAddress),
+      ]);
+      const local: RouteHit[] = [];
+      for (const result of settled) {
+        if (result.status === 'fulfilled') local.push(result.value);
+        else failures++;
       }
+      return { ok: local.length > 0, local };
+    }));
+    for (const r of results) {
+      if (r.ok) assetsQuoted++;
+      hits.push(...r.local);
     }
 
     const trusted: RouteHit[] = [];
@@ -231,7 +237,11 @@ export async function POST(req: NextRequest) {
     if (!routes.length) {
       return NextResponse.json({
         error: 'Live LI.FI quotes were found, but none matched the current official LI.FI Base deployment/allowlist trust checks. Do not finalize bootstrap.',
-        assetsFound: assets.length,
+        assetsFound: allAssets.length,
+        assetsScanned: assets.length,
+        offset,
+        nextOffset: Math.min(offset + assets.length, allAssets.length),
+        hasMore: offset + assets.length < allAssets.length,
         assetsQuoted,
         failures,
       }, { status: 409 });
@@ -239,7 +249,11 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       routes,
-      assetsFound: assets.length,
+      assetsFound: allAssets.length,
+      assetsScanned: assets.length,
+      offset,
+      nextOffset: Math.min(offset + assets.length, allAssets.length),
+      hasMore: offset + assets.length < allAssets.length,
       assetsQuoted,
       failures,
       trustSource: 'LI.FI official deployments/base.json + config/whitelist.json',
