@@ -48,10 +48,11 @@ function topic(sig: string) {
 }
 
 const RPC_ENDPOINTS = [
-  'https://base-rpc.publicnode.com',
-  'https://base.drpc.org',
-  'https://mainnet.base.org',
-];
+  // dRPC supports historical reads here but caps free eth_getLogs ranges.
+  // Base public RPC is the final fallback and is intentionally scanned in <=500-block windows.
+  { url: 'https://base.drpc.org', logSpan: 5_000n },
+  { url: 'https://mainnet.base.org', logSpan: 450n },
+] as const;
 
 async function rpcCall(url: string, method: string, params: any[]) {
   const r = await fetch(url, {
@@ -80,15 +81,22 @@ async function findContractStartBlock(url: string, latest: bigint) {
   return lo;
 }
 
-async function logsFromRpc(url: string, topic0s: `0x${string}`[]) {
+async function sleep(ms: number) {
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function logsFromRpc(url: string, topic0s: `0x${string}`[], initialSpan: bigint) {
   const latestHex = await rpcCall(url, 'eth_blockNumber', []);
   const latest = BigInt(latestHex);
+  // dRPC/Base can serve historical eth_getCode; use it only to locate the registry
+  // deployment. This is ~26 small reads instead of scanning Base from genesis.
   const first = await findContractStartBlock(url, latest);
 
   const out: any[] = [];
   let from = first;
-  let span = 100_000n;
-  const minSpan = 500n;
+  let span = initialSpan;
+  const minSpan = 100n;
+  let pages = 0;
 
   while (from <= latest) {
     let to = from + span - 1n;
@@ -98,15 +106,21 @@ async function logsFromRpc(url: string, topic0s: `0x${string}`[]) {
         address: ASSET_REGISTRY,
         fromBlock: `0x${from.toString(16)}`,
         toBlock: `0x${to.toString(16)}`,
-        // JSON-RPC topic arrays are OR filters, so configured + disabled are
-        // collected in one historical pass instead of scanning twice.
         topics: [topic0s],
       }]);
       if (Array.isArray(rows)) out.push(...rows);
       from = to + 1n;
-      // Grow back toward the fast path after a provider accepted a smaller page.
-      if (span < 100_000n) span = span * 2n > 100_000n ? 100_000n : span * 2n;
+      pages++;
+      // Keep requests gentle enough for free public infrastructure.
+      if (pages % 8 === 0) await sleep(75);
     } catch (e) {
+      const message = e instanceof Error ? e.message.toLowerCase() : '';
+      const retryable = message.includes('rate limit') || message.includes('too many') || message.includes('429');
+      if (retryable) {
+        await sleep(750);
+        if (span > 450n) span = 450n;
+        continue;
+      }
       if (span <= minSpan) throw e;
       span /= 2n;
       if (span < minSpan) span = minSpan;
@@ -117,14 +131,14 @@ async function logsFromRpc(url: string, topic0s: `0x${string}`[]) {
 
 async function registryLogs(topic0s: `0x${string}`[]) {
   const errors: string[] = [];
-  for (const url of RPC_ENDPOINTS) {
+  for (const rpc of RPC_ENDPOINTS) {
     try {
-      return await logsFromRpc(url, topic0s);
+      return await logsFromRpc(rpc.url, topic0s, rpc.logSpan);
     } catch (e) {
-      errors.push(`${new URL(url).hostname}: ${e instanceof Error ? e.message : 'unknown RPC error'}`);
+      errors.push(`${new URL(rpc.url).hostname}: ${e instanceof Error ? e.message : 'unknown RPC error'}`);
     }
   }
-  throw new Error(`Could not enumerate Asset Registry events from the free Base RPC fallbacks. ${errors.join(' | ')}`);
+  throw new Error(`Could not enumerate Asset Registry events from Base RPC. ${errors.join(' | ')}`);
 }
 
 async function discoverEnabledAssets() {
@@ -314,7 +328,7 @@ export async function POST(req: NextRequest) {
       hasMore: offset + assets.length < allAssets.length,
       assetsQuoted,
       failures,
-      registrySource: 'Base RPC with Etherscan V2 fallback',
+      registrySource: 'Base RPC (bounded historical log windows)',
       trustSource: 'LI.FI official deployments/base.json + config/whitelist.json',
       quoteDirections: ['USDC→asset', 'asset→USDC'],
       quoteSlippage: 0.005,
