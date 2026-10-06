@@ -228,110 +228,100 @@ async function quote(fromToken: Address, toToken: Address, fromAmount: string, f
   };
 }
 
+let assetCache: { expiresAt: number; assets: { asset: Address; enabled: boolean; decimals: number }[] } | null = null;
+
+async function cachedEnabledAssets() {
+  if (assetCache && assetCache.expiresAt > Date.now()) return assetCache.assets;
+  const assets = await discoverEnabledAssets();
+  assetCache = { expiresAt: Date.now() + 10 * 60 * 1000, assets };
+  return assets;
+}
+
+async function trustHits(hits: RouteHit[]) {
+  const { deploymentSet, whitelistSet, whitelistSelectors } = await trustedLifiAddresses();
+  const trusted: RouteHit[] = [];
+  for (const hit of hits) {
+    const target = hit.target.toLowerCase();
+    const spender = hit.spender.toLowerCase();
+    const targetIsDeployment = deploymentSet.has(target);
+    const targetIsWhitelistedDex = whitelistSet.has(target);
+    if (!(targetIsDeployment || targetIsWhitelistedDex)) continue;
+    if (targetIsWhitelistedDex && !targetIsDeployment) {
+      const selectors = whitelistSelectors.get(target);
+      if (selectors && selectors.size > 0 && !selectors.has(hit.selector.toLowerCase())) continue;
+    }
+    const canonicalPermit2 = '0x000000000022d473030f116ddee9f6b43ac78ba3';
+    if (!(deploymentSet.has(spender) || whitelistSet.has(spender) || spender === target || spender === canonicalPermit2)) continue;
+    const [targetCode, spenderCode] = await Promise.all([
+      publicClient.getBytecode({ address: hit.target }),
+      publicClient.getBytecode({ address: hit.spender }),
+    ]);
+    if (!targetCode || targetCode === '0x' || !spenderCode || spenderCode === '0x') continue;
+    trusted.push(hit);
+  }
+  return trusted;
+}
+
+function groupRoutes(hits: RouteHit[]) {
+  const grouped = new Map<string, { target: Address; spender: Address; selector: `0x${string}`; tool: string; coverage: number; samples: string[] }>();
+  for (const hit of hits) {
+    const key = `${hit.target.toLowerCase()}:${hit.spender.toLowerCase()}:${hit.selector.toLowerCase()}`;
+    const sample = `${hit.direction}:${hit.asset}`;
+    const existing = grouped.get(key);
+    if (existing) {
+      existing.coverage++;
+      if (existing.samples.length < 6 && !existing.samples.includes(sample)) existing.samples.push(sample);
+    } else grouped.set(key, { target: hit.target, spender: hit.spender, selector: hit.selector, tool: hit.tool, coverage: 1, samples: [sample] });
+  }
+  return [...grouped.values()].sort((a, b) => b.coverage - a.coverage);
+}
+
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => null) as { fromAddress?: string } | null;
-    if (!body?.fromAddress || !isAddress(body.fromAddress)) return NextResponse.json({ error: 'A valid deployment wallet address is required.' }, { status: 400 });
-    const fromAddress = getAddress(body.fromAddress);
-    const rawOffset = Number((body as any)?.offset ?? 0);
-    const rawLimit = Number((body as any)?.limit ?? 8);
-    const offset = Number.isFinite(rawOffset) ? Math.max(0, Math.floor(rawOffset)) : 0;
-    const limit = Number.isFinite(rawLimit) ? Math.min(10, Math.max(1, Math.floor(rawLimit))) : 8;
+    const body = await req.json().catch(() => null) as any;
+    const action = body?.action === 'quote' ? 'quote' : 'assets';
 
-    const [{ deploymentSet, whitelistSet, whitelistSelectors }, allAssets] = await Promise.all([
-      trustedLifiAddresses(),
-      discoverEnabledAssets(),
-    ]);
-
-    const assets = allAssets.slice(offset, offset + limit);
-    const hits: RouteHit[] = [];
-    let failures = 0;
-    let assetsQuoted = 0;
-
-    // One bounded page per request keeps Vercel well below its function timeout.
-    // Buy + sell are requested in parallel for each asset. The UI walks all pages.
-    const results = await Promise.all(assets.map(async ({ asset, decimals }) => {
-      const whole = 10n ** BigInt(Math.min(Math.max(decimals, 0), 24));
-      const settled = await Promise.allSettled([
-        quote(BASE_USDC, asset, '10000000', fromAddress),
-        quote(asset, BASE_USDC, whole.toString(), fromAddress),
-      ]);
-      const local: RouteHit[] = [];
-      for (const result of settled) {
-        if (result.status === 'fulfilled') local.push(result.value);
-        else failures++;
-      }
-      return { ok: local.length > 0, local };
-    }));
-    for (const r of results) {
-      if (r.ok) assetsQuoted++;
-      hits.push(...r.local);
-    }
-
-    const trusted: RouteHit[] = [];
-    for (const hit of hits) {
-      const target = hit.target.toLowerCase();
-      const spender = hit.spender.toLowerCase();
-      // Accept only contracts published by LI.FI for Base: either an official LI.FI deployment
-      // or a Base DEX target in LI.FI's own whitelist. For direct DEX targets, also require that
-      // LI.FI explicitly whitelists the returned function selector for that target.
-      const targetIsDeployment = deploymentSet.has(target);
-      const targetIsWhitelistedDex = whitelistSet.has(target);
-      if (!(targetIsDeployment || targetIsWhitelistedDex)) continue;
-      if (targetIsWhitelistedDex && !targetIsDeployment) {
-        const selectors = whitelistSelectors.get(target);
-        if (selectors && selectors.size > 0 && !selectors.has(hit.selector.toLowerCase())) continue;
-      }
-      const canonicalPermit2 = '0x000000000022d473030f116ddee9f6b43ac78ba3';
-      if (!(deploymentSet.has(spender) || whitelistSet.has(spender) || spender === target || spender === canonicalPermit2)) continue;
-      const [targetCode, spenderCode] = await Promise.all([
-        publicClient.getBytecode({ address: hit.target }),
-        publicClient.getBytecode({ address: hit.spender }),
-      ]);
-      if (!targetCode || targetCode === '0x' || !spenderCode || spenderCode === '0x') continue;
-      trusted.push(hit);
-    }
-
-    const grouped = new Map<string, { target: Address; spender: Address; selector: `0x${string}`; tool: string; coverage: number; samples: string[] }>();
-    for (const hit of trusted) {
-      const key = `${hit.target.toLowerCase()}:${hit.spender.toLowerCase()}:${hit.selector.toLowerCase()}`;
-      const sample = `${hit.direction}:${hit.asset}`;
-      const existing = grouped.get(key);
-      if (existing) {
-        existing.coverage++;
-        if (existing.samples.length < 6 && !existing.samples.includes(sample)) existing.samples.push(sample);
-      } else {
-        grouped.set(key, { target: hit.target, spender: hit.spender, selector: hit.selector, tool: hit.tool, coverage: 1, samples: [sample] });
-      }
-    }
-
-    const routes = [...grouped.values()].sort((a, b) => b.coverage - a.coverage);
-    if (!routes.length) {
+    if (action === 'assets') {
+      const assets = await cachedEnabledAssets();
       return NextResponse.json({
-        error: 'Live LI.FI quotes were found, but none matched the current official LI.FI Base deployment/allowlist trust checks. Do not finalize bootstrap.',
-        assetsFound: allAssets.length,
-        assetsScanned: assets.length,
-        offset,
-        nextOffset: Math.min(offset + assets.length, allAssets.length),
-        hasMore: offset + assets.length < allAssets.length,
-        assetsQuoted,
-        failures,
-      }, { status: 409 });
+        assets: assets.map(({ asset, decimals }) => ({ asset, decimals })),
+        assetsFound: assets.length,
+        registrySource: 'Base RPC bounded historical log windows',
+        cachedForSeconds: 600,
+      });
     }
 
+    if (!body?.fromAddress || !isAddress(body.fromAddress)) {
+      return NextResponse.json({ error: 'A valid deployment wallet address is required.' }, { status: 400 });
+    }
+    if (!body?.asset || !isAddress(body.asset)) {
+      return NextResponse.json({ error: 'A valid registry asset address is required.' }, { status: 400 });
+    }
+    const fromAddress = getAddress(body.fromAddress);
+    const asset = getAddress(body.asset);
+    const decimals = Number.isFinite(Number(body.decimals)) ? Math.min(24, Math.max(0, Number(body.decimals))) : 18;
+    const whole = 10n ** BigInt(decimals);
+    const settled = await Promise.allSettled([
+      quote(BASE_USDC, asset, '10000000', fromAddress),
+      quote(asset, BASE_USDC, whole.toString(), fromAddress),
+    ]);
+    const hits: RouteHit[] = [];
+    const errors: string[] = [];
+    for (const result of settled) {
+      if (result.status === 'fulfilled') hits.push(result.value);
+      else errors.push(result.reason instanceof Error ? result.reason.message : String(result.reason));
+    }
+    if (!hits.length) {
+      return NextResponse.json({ asset, routes: [], status: 'no-route', errors }, { status: 200 });
+    }
+    const trusted = await trustHits(hits);
     return NextResponse.json({
-      routes,
-      assetsFound: allAssets.length,
-      assetsScanned: assets.length,
-      offset,
-      nextOffset: Math.min(offset + assets.length, allAssets.length),
-      hasMore: offset + assets.length < allAssets.length,
-      assetsQuoted,
-      failures,
-      registrySource: 'Base RPC (bounded historical log windows)',
+      asset,
+      routes: groupRoutes(trusted),
+      status: trusted.length ? 'ok' : 'untrusted',
+      quoteCount: hits.length,
+      errors,
       trustSource: 'LI.FI official deployments/base.json + config/whitelist.json',
-      quoteDirections: ['USDC→asset', 'asset→USDC'],
-      quoteSlippage: 0.005,
       permissionDiscoveryOnly: true,
     });
   } catch (error) {
