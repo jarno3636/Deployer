@@ -10,7 +10,7 @@ export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => null) as { toToken?: string; fromAddress?: string } | null;
+    const body = await req.json().catch(() => null) as { toToken?: string; fromAddress?: string; direction?: 'buy'|'sell'; tokenDecimals?: number } | null;
     if (!body || !body.toToken || !body.fromAddress || !isAddress(body.toToken) || !isAddress(body.fromAddress)) {
       return NextResponse.json({ error: 'Valid toToken and fromAddress are required.' }, { status: 400 });
     }
@@ -21,14 +21,17 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'Choose a registered non-USDC constituent token.' }, { status: 400 });
     }
 
+    const direction = body.direction === 'sell' ? 'sell' : 'buy';
+    const tokenDecimals = Number.isInteger(body.tokenDecimals) ? Math.max(0, Math.min(36, Number(body.tokenDecimals))) : 18;
+    const sellSample = (10n ** BigInt(tokenDecimals)).toString(); // one whole token for infrastructure discovery only
     const q = new URLSearchParams({
       fromChain: BASE_CHAIN_ID,
       toChain: BASE_CHAIN_ID,
-      fromToken: BASE_USDC,
-      toToken,
+      fromToken: direction === 'buy' ? BASE_USDC : toToken,
+      toToken: direction === 'buy' ? toToken : BASE_USDC,
       fromAddress,
       toAddress: fromAddress,
-      fromAmount: SAMPLE_AMOUNT,
+      fromAmount: direction === 'buy' ? SAMPLE_AMOUNT : sellSample,
       slippage: '0.005',
       maxPriceImpact: '0.05',
       denyBridges: 'all',
@@ -60,7 +63,8 @@ export async function POST(req: NextRequest) {
       spender: getAddress(spender),
       selector: callData.slice(0, 10),
       tool: data?.toolDetails?.name || data?.tool || 'LI.FI',
-      fromAmount: data?.estimate?.fromAmount || SAMPLE_AMOUNT,
+      fromAmount: data?.estimate?.fromAmount || (direction === 'buy' ? SAMPLE_AMOUNT : sellSample),
+      direction,
       toAmountMin: data?.estimate?.toAmountMin || '',
       sampledToken: toToken,
       sampledChain: Number(BASE_CHAIN_ID),
