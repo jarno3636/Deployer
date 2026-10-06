@@ -47,83 +47,93 @@ function topic(sig: string) {
   return keccak256(stringToHex(sig));
 }
 
-async function rpcLogs(topic0: `0x${string}`) {
-  // Use the configured Base RPC first. This keeps registry discovery independent
-  // from explorer availability and reads the canonical onchain event history.
-  const logs = await publicClient.request({
-    method: 'eth_getLogs',
-    params: [{
-      address: ASSET_REGISTRY,
-      fromBlock: '0x0',
-      toBlock: 'latest',
-      topics: [topic0],
-    }],
-  } as any) as any[];
-  return Array.isArray(logs) ? logs : [];
+const RPC_ENDPOINTS = [
+  'https://base-rpc.publicnode.com',
+  'https://base.drpc.org',
+  'https://mainnet.base.org',
+];
+
+async function rpcCall(url: string, method: string, params: any[]) {
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params }),
+    cache: 'no-store',
+    signal: AbortSignal.timeout(12000),
+  });
+  const j = await r.json().catch(() => null) as any;
+  if (!r.ok || !j || j.error) throw new Error(j?.error?.message || `RPC ${r.status}`);
+  return j.result;
 }
 
-async function etherscanLogs(topic0: `0x${string}`) {
-  const apiKey = process.env.ETHERSCAN_API_KEY;
-  if (!apiKey) throw new Error('Base RPC could not enumerate Asset Registry events and ETHERSCAN_API_KEY is not configured.');
+async function findContractStartBlock(url: string, latest: bigint) {
+  // Binary-search the first block where the reused registry has bytecode.
+  // This avoids scanning Base from genesis and needs only ~26 eth_getCode calls.
+  let lo = 0n;
+  let hi = latest;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1n;
+    const code = await rpcCall(url, 'eth_getCode', [ASSET_REGISTRY, `0x${mid.toString(16)}`]);
+    if (typeof code === 'string' && code !== '0x') hi = mid;
+    else lo = mid + 1n;
+  }
+  return lo;
+}
+
+async function logsFromRpc(url: string, topic0s: `0x${string}`[]) {
+  const latestHex = await rpcCall(url, 'eth_blockNumber', []);
+  const latest = BigInt(latestHex);
+  const first = await findContractStartBlock(url, latest);
 
   const out: any[] = [];
-  // Etherscan V2 supports Base through chainid=8453. Page defensively in case
-  // the registry eventually exceeds a single response.
-  for (let page = 1; page <= 20; page++) {
-    const q = new URLSearchParams({
-      chainid: BASE_CHAIN_ID,
-      module: 'logs',
-      action: 'getLogs',
-      address: ASSET_REGISTRY,
-      fromBlock: '0',
-      toBlock: 'latest',
-      topic0,
-      page: String(page),
-      offset: '1000',
-      apikey: apiKey,
-    });
-    const r = await fetch(`${ETHERSCAN_V2}?${q.toString()}`, {
-      cache: 'no-store',
-      signal: AbortSignal.timeout(15000),
-    });
-    const j = await r.json().catch(() => null) as any;
-    if (!r.ok || !j) throw new Error(`Etherscan Asset Registry log lookup failed (${r.status}).`);
-    if (j.status === '0') {
-      const msg = String(j.result || j.message || '');
-      if (/no records found/i.test(msg)) break;
-      throw new Error(`Etherscan could not enumerate Asset Registry events: ${msg || 'unknown response'}`);
+  let from = first;
+  let span = 100_000n;
+  const minSpan = 500n;
+
+  while (from <= latest) {
+    let to = from + span - 1n;
+    if (to > latest) to = latest;
+    try {
+      const rows = await rpcCall(url, 'eth_getLogs', [{
+        address: ASSET_REGISTRY,
+        fromBlock: `0x${from.toString(16)}`,
+        toBlock: `0x${to.toString(16)}`,
+        // JSON-RPC topic arrays are OR filters, so configured + disabled are
+        // collected in one historical pass instead of scanning twice.
+        topics: [topic0s],
+      }]);
+      if (Array.isArray(rows)) out.push(...rows);
+      from = to + 1n;
+      // Grow back toward the fast path after a provider accepted a smaller page.
+      if (span < 100_000n) span = span * 2n > 100_000n ? 100_000n : span * 2n;
+    } catch (e) {
+      if (span <= minSpan) throw e;
+      span /= 2n;
+      if (span < minSpan) span = minSpan;
     }
-    const rows = Array.isArray(j.result) ? j.result : [];
-    out.push(...rows);
-    if (rows.length < 1000) break;
   }
   return out;
 }
 
-async function registryLogs(topic0: `0x${string}`) {
-  try {
-    return await rpcLogs(topic0);
-  } catch (rpcError) {
+async function registryLogs(topic0s: `0x${string}`[]) {
+  const errors: string[] = [];
+  for (const url of RPC_ENDPOINTS) {
     try {
-      return await etherscanLogs(topic0);
-    } catch (etherscanError) {
-      const rpcMessage = rpcError instanceof Error ? rpcError.message : 'unknown RPC error';
-      const etherscanMessage = etherscanError instanceof Error ? etherscanError.message : 'unknown Etherscan error';
-      throw new Error(`Could not enumerate Asset Registry events from Base RPC or Etherscan. RPC: ${rpcMessage}. Etherscan: ${etherscanMessage}`);
+      return await logsFromRpc(url, topic0s);
+    } catch (e) {
+      errors.push(`${new URL(url).hostname}: ${e instanceof Error ? e.message : 'unknown RPC error'}`);
     }
   }
+  throw new Error(`Could not enumerate Asset Registry events from the free Base RPC fallbacks. ${errors.join(' | ')}`);
 }
 
 async function discoverEnabledAssets() {
   const configuredTopic = topic('AssetConfigured(address,bool,uint16,uint8)');
   const disabledTopic = topic('AssetDisabled(address)');
-  const [configured, disabled] = await Promise.all([
-    registryLogs(configuredTopic),
-    registryLogs(disabledTopic),
-  ]);
+  const logs = await registryLogs([configuredTopic, disabledTopic]);
 
   const seen = new Set<string>();
-  for (const log of [...configured, ...disabled]) {
+  for (const log of logs) {
     const indexed = Array.isArray(log?.topics) ? log.topics[1] : null;
     if (typeof indexed === 'string' && /^0x[0-9a-fA-F]{64}$/.test(indexed)) {
       seen.add(getAddress(`0x${indexed.slice(-40)}`).toLowerCase());
