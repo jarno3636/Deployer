@@ -3,14 +3,14 @@ import { getAddress, isAddress } from 'viem';
 
 const BASE_CHAIN_ID = '8453';
 const BASE_USDC = getAddress('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
-const SAMPLE_AMOUNT = '10000000'; // 10 USDC, six decimals. Quote discovery only.
+const SAMPLE_AMOUNT = '25000000'; // 25 USDC, matching Indexio minimum seed. Quote discovery only.
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => null) as { toToken?: string; fromAddress?: string; direction?: 'buy'|'sell'; tokenDecimals?: number } | null;
+    const body = await req.json().catch(() => null) as { toToken?: string; fromAddress?: string; direction?: 'buy'|'sell'; tokenDecimals?: number; fromAmount?: string } | null;
     if (!body || !body.toToken || !body.fromAddress || !isAddress(body.toToken) || !isAddress(body.fromAddress)) {
       return NextResponse.json({ error: 'Valid toToken and fromAddress are required.' }, { status: 400 });
     }
@@ -23,7 +23,8 @@ export async function POST(req: NextRequest) {
 
     const direction = body.direction === 'sell' ? 'sell' : 'buy';
     const tokenDecimals = Number.isInteger(body.tokenDecimals) ? Math.max(0, Math.min(36, Number(body.tokenDecimals))) : 18;
-    const sellSample = (10n ** BigInt(tokenDecimals)).toString(); // one whole token for infrastructure discovery only
+    const requestedSellAmount = typeof body.fromAmount === 'string' && /^[0-9]+$/.test(body.fromAmount) && BigInt(body.fromAmount) > 0n ? body.fromAmount : '';
+    const sellSample = requestedSellAmount || (10n ** BigInt(tokenDecimals)).toString();
     const q = new URLSearchParams({
       fromChain: BASE_CHAIN_ID,
       toChain: BASE_CHAIN_ID,
@@ -65,6 +66,7 @@ export async function POST(req: NextRequest) {
       tool: data?.toolDetails?.name || data?.tool || 'LI.FI',
       fromAmount: data?.estimate?.fromAmount || (direction === 'buy' ? SAMPLE_AMOUNT : sellSample),
       direction,
+      toAmount: data?.estimate?.toAmount || '',
       toAmountMin: data?.estimate?.toAmountMin || '',
       sampledToken: toToken,
       sampledChain: Number(BASE_CHAIN_ID),
