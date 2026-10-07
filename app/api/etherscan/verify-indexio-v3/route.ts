@@ -11,6 +11,7 @@ const COMPILER = 'v0.8.30+commit.73712a01';
 const CONTRACTS = {
   governanceConfig: { fq: 'contracts/indexio-v3/IndexioGovernanceConfigV3.sol:IndexioGovernanceConfigV3' },
   safetyController: { fq: 'contracts/indexio-v3/IndexioSafetyControllerV3.sol:IndexioSafetyControllerV3' },
+  transferPolicy: { fq: 'contracts/indexio-v3/IndexioTransferPolicyV3.sol:IndexioTransferPolicyV3' },
   factory: { fq: 'contracts/indexio-v3/IndexioFactoryV3.sol:IndexioFactoryV3' },
   vaultDeployer: { fq: 'contracts/indexio-v3/IndexioVaultDeployerV3.sol:IndexioVaultDeployerV3' },
   executionRouter: { fq: 'contracts/indexio-v3/IndexioExecutionRouterV3.sol:IndexioExecutionRouterV3' },
