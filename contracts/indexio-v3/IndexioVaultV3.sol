@@ -15,8 +15,10 @@ interface IFactoryV3 {
     function safetyController() external view returns(address);
     function settlementToken() external view returns(address);
     function executionRouter() external view returns(address);
+    function transferPolicy() external view returns(address);
 }
 interface IRegistryCheckV3 { function requireAsset(address,uint16) external view returns(uint8); }
+interface ITransferPolicyV3 { function expectedReceiveBps(address) external view returns(uint16); }
 interface ISafetyV3 { function depositsPaused(address) external view returns(bool); function tradingPaused(address) external view returns(bool); }
 interface IShareIdentityV3 { function vault() external view returns(address); }
 interface IIncomeIdentityV3 {
@@ -49,12 +51,15 @@ contract IndexioVaultV3 is ReentrancyGuard {
     address[] private _assets;
     uint16[] private _weights;
     mapping(address=>bool) public historicalAsset;
+    mapping(address=>uint16) public lastObservedReceiveBps;
 
     event ComponentsInitialized(address indexed shareToken,address indexed incomeHub,address indexed governor);
     event Deposited(address indexed caller,address indexed receiver,uint256 shares);
     event Redeemed(address indexed owner,address indexed receiver,uint256 shares);
     event VaultClosed();
     event CompositionUpdated(address[] assets,uint16[] weights);
+    event PreSeedCompositionUpdated(address indexed creator,address[] assets,uint16[] weights);
+    event TransferBehaviorObserved(address indexed token,address indexed recipient,uint256 requested,uint256 received,uint16 receiveBps);
 
     modifier ready(){require(initialized,"not initialized");_;}
 
@@ -84,6 +89,20 @@ contract IndexioVaultV3 is ReentrancyGuard {
     function assets() external view returns(address[] memory){return _assets;}
     function weights() external view returns(uint16[] memory){return _weights;}
     function executionRouter() external view returns(address){return IFactoryV3(factory).executionRouter();}
+    function expectedReceiveBps(address token) public view returns(uint16){uint16 observed=lastObservedReceiveBps[token];return observed>0?observed:ITransferPolicyV3(IFactoryV3(factory).transferPolicy()).expectedReceiveBps(token);}
+
+    /// @notice Creator may freely fix assets/weights before the first successful investment.
+    /// @dev Once seeded, direct creator editing is permanently disabled and shareholder governance takes over.
+    function updatePreSeedComposition(address[] calldata a,uint16[] calldata w) external ready nonReentrant {
+        require(msg.sender==creator,"creator");
+        require(!seeded&&!closed&&shareToken.totalSupply()==0,"already active");
+        _validate(a,w);
+        _assets=a;
+        _weights=w;
+        for(uint256 i;i<a.length;i++)historicalAsset[a[i]]=true;
+        emit PreSeedCompositionUpdated(msg.sender,a,w);
+        emit CompositionUpdated(a,w);
+    }
 
     function seed(address receiver,uint256[] calldata gross,uint256 shares) external ready nonReentrant returns(uint256 minted){
         require(!seeded&&!closed&&shareToken.totalSupply()==0,"seeded");
@@ -92,20 +111,25 @@ contract IndexioVaultV3 is ReentrancyGuard {
         require(receiver!=address(0)&&gross.length==_assets.length&&shares>0,"input");
         _validate(_assets,_weights);
         address treasury=IFactoryV3(factory).feeTreasury();
+        uint256 weightedScale18;
         for(uint256 i;i<_assets.length;i++){
             require(gross[i]>0,"zero");
             uint256 protocolFee=gross[i]*INDEXIO_FEE_BPS/BPS;
             uint256 creatorFee=gross[i]*creatorFeeBps/BPS;
             uint256 net=gross[i]-protocolFee-creatorFee;
             require(net>0,"net");
-            _pullExact(_assets[i],msg.sender,address(this),net);
-            if(protocolFee>0)_pullExact(_assets[i],msg.sender,treasury,protocolFee);
-            if(creatorFee>0)_pullExact(_assets[i],msg.sender,creator,creatorFee);
+            uint256 actualNet=_pullReceived(_assets[i],msg.sender,address(this),net);
+            if(protocolFee>0)_pullReceived(_assets[i],msg.sender,treasury,protocolFee);
+            if(creatorFee>0)_pullReceived(_assets[i],msg.sender,creator,creatorFee);
+            uint256 ratio=Math.min(1e18,Math.mulDiv(actualNet,1e18,net));
+            weightedScale18+=Math.mulDiv(uint256(_weights[i]),ratio,BPS);
         }
+        minted=Math.mulDiv(shares,weightedScale18,1e18);
+        require(minted>0&&minted<=type(uint208).max,"shares");
         seeded=true;
-        shareToken.mint(receiver,shares);
-        emit Deposited(msg.sender,receiver,shares);
-        return shares;
+        shareToken.mint(receiver,minted);
+        emit Deposited(msg.sender,receiver,minted);
+        return minted;
     }
 
     function deposit(uint256[] calldata gross,address receiver,uint256 minSharesOut,uint256 deadline) external ready nonReentrant returns(uint256 shares){
@@ -116,31 +140,35 @@ contract IndexioVaultV3 is ReentrancyGuard {
         _validate(_assets,_weights);
         uint256 supply=shareToken.totalSupply();
         require(supply>0,"supply");
-        uint256 minShares=type(uint256).max;
         uint256 feeBps=INDEXIO_FEE_BPS+creatorFeeBps;
+        uint256 candidate=type(uint256).max;
+        uint256[] memory beforeBal=new uint256[](_assets.length);
         for(uint256 i;i<_assets.length;i++){
             require(gross[i]>0,"zero");
-            uint256 net=gross[i]*(BPS-feeBps)/BPS;
-            uint256 bal=IERC20(_assets[i]).balanceOf(address(this));
-            require(bal>0,"empty asset");
-            minShares=Math.min(minShares,Math.mulDiv(net,supply,bal));
+            beforeBal[i]=IERC20(_assets[i]).balanceOf(address(this));
+            require(beforeBal[i]>0,"empty asset");
+            uint256 nominalNet=gross[i]*(BPS-feeBps)/BPS;
+            uint256 expectedNet=Math.mulDiv(nominalNet,expectedReceiveBps(_assets[i]),BPS);
+            candidate=Math.min(candidate,Math.mulDiv(expectedNet,supply,beforeBal[i]));
         }
-        shares=minShares;
-        require(shares>0&&shares>=minSharesOut,"shares");
+        require(candidate>0,"shares");
         address treasury=IFactoryV3(factory).feeTreasury();
+        shares=type(uint256).max;
         for(uint256 i;i<_assets.length;i++){
-            uint256 bal=IERC20(_assets[i]).balanceOf(address(this));
-            uint256 requiredNet=Math.mulDiv(bal,shares,supply,Math.Rounding.Ceil);
-            uint256 acceptedGross=Math.mulDiv(requiredNet,BPS,BPS-feeBps,Math.Rounding.Ceil);
+            uint256 requiredActual=Math.mulDiv(beforeBal[i],candidate,supply,Math.Rounding.Ceil);
+            uint256 rbps=expectedReceiveBps(_assets[i]);
+            uint256 requiredNominal=Math.mulDiv(requiredActual,BPS,rbps,Math.Rounding.Ceil);
+            uint256 acceptedGross=Math.mulDiv(requiredNominal,BPS,BPS-feeBps,Math.Rounding.Ceil);
             require(acceptedGross<=gross[i],"ratio");
             uint256 protocolFee=acceptedGross*INDEXIO_FEE_BPS/BPS;
             uint256 creatorFee=acceptedGross*creatorFeeBps/BPS;
-            uint256 acceptedNet=acceptedGross-protocolFee-creatorFee;
-            require(acceptedNet>=requiredNet,"rounding");
-            _pullExact(_assets[i],msg.sender,address(this),acceptedNet);
-            if(protocolFee>0)_pullExact(_assets[i],msg.sender,treasury,protocolFee);
-            if(creatorFee>0)_pullExact(_assets[i],msg.sender,creator,creatorFee);
+            uint256 nominalNet=acceptedGross-protocolFee-creatorFee;
+            uint256 actualNet=_pullReceived(_assets[i],msg.sender,address(this),nominalNet);
+            if(protocolFee>0)_pullReceived(_assets[i],msg.sender,treasury,protocolFee);
+            if(creatorFee>0)_pullReceived(_assets[i],msg.sender,creator,creatorFee);
+            shares=Math.min(shares,Math.mulDiv(actualNet,supply,beforeBal[i]));
         }
+        require(shares>0&&shares>=minSharesOut,"shares");
         shareToken.mint(receiver,shares);
         emit Deposited(msg.sender,receiver,shares);
     }
@@ -156,14 +184,16 @@ contract IndexioVaultV3 is ReentrancyGuard {
         shareToken.burn(msg.sender,shares);
         address treasury=IFactoryV3(factory).feeTreasury();
         for(uint256 i;i<_assets.length;i++){
-            uint256 gross=Math.mulDiv(IERC20(_assets[i]).balanceOf(address(this)),shares,supply);
+            uint256 start=IERC20(_assets[i]).balanceOf(address(this));
+            uint256 gross=Math.mulDiv(start,shares,supply);
             uint256 p=gross*INDEXIO_FEE_BPS/BPS;
             uint256 c=gross*creatorFeeBps/BPS;
-            amounts[i]=gross-p-c;
+            uint256 nominal=gross-p-c;
+            if(p>0)_pushReceived(_assets[i],treasury,p);
+            if(c>0)_pushReceived(_assets[i],creator,c);
+            amounts[i]=_pushReceived(_assets[i],receiver,nominal);
             require(amounts[i]>=minAmountsOut[i],"min out");
-            if(p>0)IERC20(_assets[i]).safeTransfer(treasury,p);
-            if(c>0)IERC20(_assets[i]).safeTransfer(creator,c);
-            IERC20(_assets[i]).safeTransfer(receiver,amounts[i]);
+            require(start-IERC20(_assets[i]).balanceOf(address(this))<=gross,"excess debit");
         }
         if(finalRedemption){closed=true;emit VaultClosed();}
         emit Redeemed(msg.sender,receiver,shares);
@@ -180,25 +210,27 @@ contract IndexioVaultV3 is ReentrancyGuard {
         shareToken.burnFromAuthorized(owner,msg.sender,shares);
         address treasury=IFactoryV3(factory).feeTreasury();
         for(uint256 i;i<_assets.length;i++){
-            uint256 gross=Math.mulDiv(IERC20(_assets[i]).balanceOf(address(this)),shares,supply);
+            uint256 start=IERC20(_assets[i]).balanceOf(address(this));
+            uint256 gross=Math.mulDiv(start,shares,supply);
             uint256 p=gross*INDEXIO_FEE_BPS/BPS;
             uint256 c=gross*creatorFeeBps/BPS;
-            amounts[i]=gross-p-c;
+            uint256 nominal=gross-p-c;
+            if(p>0)_pushReceived(_assets[i],treasury,p);
+            if(c>0)_pushReceived(_assets[i],creator,c);
+            amounts[i]=_pushReceived(_assets[i],receiver,nominal);
             require(amounts[i]>=minAmountsOut[i],"min out");
-            if(p>0)IERC20(_assets[i]).safeTransfer(treasury,p);
-            if(c>0)IERC20(_assets[i]).safeTransfer(creator,c);
-            IERC20(_assets[i]).safeTransfer(receiver,amounts[i]);
+            require(start-IERC20(_assets[i]).balanceOf(address(this))<=gross,"excess debit");
         }
         if(finalRedemption){closed=true;emit VaultClosed();}
         emit Redeemed(owner,receiver,shares);
     }
 
-    function transferForRebalance(address token,address to,uint256 amount) external ready {
+    function transferForRebalance(address token,address to,uint256 amount) external ready returns(uint256 received) {
         require(msg.sender==IFactoryV3(factory).executionRouter()&&to!=address(0)&&amount>0,"router/input");
         bool current;
         for(uint256 i;i<_assets.length;i++)if(token==_assets[i]){current=true;break;}
         require(current,"asset");
-        IERC20(token).safeTransfer(to,amount);
+        received=_pushReceived(token,to,amount);
     }
 
     function notifyIncome(address token) external ready {
@@ -238,10 +270,32 @@ contract IndexioVaultV3 is ReentrancyGuard {
         emit CompositionUpdated(a,w);
     }
 
-    function _pullExact(address token,address from,address to,uint256 amount) internal {
+    function _pullReceived(address token,address from,address to,uint256 amount) internal returns(uint256 received) {
+        uint256 senderBefore=IERC20(token).balanceOf(from);
         uint256 beforeBal=IERC20(token).balanceOf(to);
         IERC20(token).safeTransferFrom(from,to,amount);
-        require(IERC20(token).balanceOf(to)-beforeBal==amount,"nonstandard token");
+        uint256 senderAfter=IERC20(token).balanceOf(from);
+        require(senderBefore>=senderAfter&&senderBefore-senderAfter==amount,"sender debit");
+        received=IERC20(token).balanceOf(to)-beforeBal;
+        require(received>0&&received<=amount,"received");
+        _recordTransfer(token,to,amount,received);
+    }
+
+    function _pushReceived(address token,address to,uint256 amount) internal returns(uint256 received) {
+        uint256 senderBefore=IERC20(token).balanceOf(address(this));
+        uint256 beforeBal=IERC20(token).balanceOf(to);
+        IERC20(token).safeTransfer(to,amount);
+        uint256 senderAfter=IERC20(token).balanceOf(address(this));
+        require(senderBefore>=senderAfter&&senderBefore-senderAfter==amount,"sender debit");
+        received=IERC20(token).balanceOf(to)-beforeBal;
+        require(received>0&&received<=amount,"received");
+        _recordTransfer(token,to,amount,received);
+    }
+
+    function _recordTransfer(address token,address to,uint256 requested,uint256 received) internal {
+        uint256 bps=Math.min(uint256(BPS),Math.mulDiv(received,BPS,requested));
+        if(to==address(this))lastObservedReceiveBps[token]=uint16(bps);
+        emit TransferBehaviorObserved(token,to,requested,received,uint16(bps));
     }
 
     function _validate(address[] memory a,uint16[] memory w) internal view {
