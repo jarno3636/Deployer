@@ -12,6 +12,7 @@ const COMPILER = 'v0.8.30+commit.73712a01';
 const CONTRACTS = {
   governanceConfig: { fq: 'contracts/indexio-v3/IndexioGovernanceConfigV3.sol:IndexioGovernanceConfigV3', name: 'IndexioGovernanceConfigV3' },
   safetyController: { fq: 'contracts/indexio-v3/IndexioSafetyControllerV3.sol:IndexioSafetyControllerV3', name: 'IndexioSafetyControllerV3' },
+  transferPolicy: { fq: 'contracts/indexio-v3/IndexioTransferPolicyV3.sol:IndexioTransferPolicyV3', name: 'IndexioTransferPolicyV3' },
   factory: { fq: 'contracts/indexio-v3/IndexioFactoryV3.sol:IndexioFactoryV3', name: 'IndexioFactoryV3' },
   vaultDeployer: { fq: 'contracts/indexio-v3/IndexioVaultDeployerV3.sol:IndexioVaultDeployerV3', name: 'IndexioVaultDeployerV3' },
   executionRouter: { fq: 'contracts/indexio-v3/IndexioExecutionRouterV3.sol:IndexioExecutionRouterV3', name: 'IndexioExecutionRouterV3' },
@@ -41,7 +42,7 @@ async function isVerified(address: string) {
   try {
     const res = await fetch(`${BASE_BLOCKSCOUT}/api/v2/smart-contracts/${address}`, {
       cache: 'no-store',
-      headers: { accept: 'application/json', 'user-agent': 'Indexio-V3.2-Verifier/1.0' },
+      headers: { accept: 'application/json', 'user-agent': 'Indexio-V3.1.1-Verifier/1.0' },
     });
     if (!res.ok) return false;
     const body = await readJson(res);
@@ -68,7 +69,7 @@ async function explorerIndexed(address: string) {
   try {
     const res = await fetch(`${BASE_BLOCKSCOUT}/api/v2/addresses/${address}`, {
       cache: 'no-store',
-      headers: { accept: 'application/json', 'user-agent': 'Indexio-V3.2-Verifier/1.0' },
+      headers: { accept: 'application/json', 'user-agent': 'Indexio-V3.1.1-Verifier/1.0' },
     });
     if (!res.ok) return false;
     const body = await readJson(res);
@@ -85,7 +86,7 @@ async function verifyViaV2(address: string, kind: ContractKind, constructorArgum
   form.append('constructor_args', constructorArguments.replace(/^0x/, ''));
   form.append('files[0]', new Blob([indexioV3StandardJsonInput], { type: 'application/json' }), 'indexio-v3-standard-input.json');
   const res = await fetch(`${BASE_BLOCKSCOUT}/api/v2/smart-contracts/${address}/verification/via/standard-input`, {
-    method: 'POST', body: form, cache: 'no-store', headers: { accept: 'application/json', 'user-agent': 'Indexio-V3.2-Verifier/1.0' },
+    method: 'POST', body: form, cache: 'no-store', headers: { accept: 'application/json', 'user-agent': 'Indexio-V3.1.1-Verifier/1.0' },
   });
   const body = await readJson(res);
   return { ok: res.ok && !body?.__nonJson, status: res.status, body };
@@ -99,7 +100,7 @@ async function verifyViaLegacy(address: string, kind: ContractKind, constructorA
     sourceCode: indexioV3StandardJsonInput, constructorArguments: constructorArguments.replace(/^0x/, ''),
   });
   const res = await fetch(`${BASE_BLOCKSCOUT}/api`, {
-    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json', 'user-agent': 'Indexio-V3.2-Verifier/1.0' },
+    method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json', 'user-agent': 'Indexio-V3.1.1-Verifier/1.0' },
     body: params.toString(), cache: 'no-store',
   });
   const body = await readJson(res);
@@ -119,7 +120,7 @@ async function verifyViaUnified(address: string, kind: ContractKind, constructor
   if (key) params.set('apikey', key);
   const res = await fetch(BLOCKSCOUT_UNIFIED, {
     method: 'POST',
-    headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json', 'user-agent': 'Indexio-V3.2-Verifier/1.0', ...(key ? { authorization: `Bearer ${key}` } : {}) },
+    headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json', 'user-agent': 'Indexio-V3.1.1-Verifier/1.0', ...(key ? { authorization: `Bearer ${key}` } : {}) },
     body: params.toString(), cache: 'no-store',
   });
   const body = await readJson(res);
