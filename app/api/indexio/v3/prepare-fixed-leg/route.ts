@@ -3,13 +3,14 @@ import {createPublicClient,http,isAddress,getAddress,encodeAbiParameters,parseAb
 import {base} from 'viem/chains';
 export const runtime='nodejs';export const dynamic='force-dynamic';
 const abi=parseAbi(['function callerRouter() view returns(address)','function inspectPath(address,address,address[],uint256) view returns(bool)','function approvedAdapter(address) view returns(bool)']);
-const address=(v:unknown)=>typeof v==='string'&&isAddress(v)?getAddress(v):null;
+type Address = `0x${string}`;
+const address=(v:unknown):Address|null=>typeof v==='string'&&isAddress(v)?getAddress(v):null;
 const fail=(error:string,status=400)=>NextResponse.json({error},{status});
 export async function POST(req:NextRequest){try{
  const b=await req.json();const adapter=address(b.adapter),tokenIn=address(b.tokenIn),tokenOut=address(b.tokenOut);
- const path=Array.isArray(b.path)?b.path.map(address):[];
- if(!adapter||!tokenIn||!tokenOut||path.length<2||path.length>4||path.some(x=>!x)||tokenIn===tokenOut)return fail('Invalid adapter or path');
- if(typeof b.amountIn!=='string'||typeof b.quotedOut!=='string'||typeof b.minOut!=='string'||![b.amountIn,b.quotedOut,b.minOut].every(v=>/^\d+$/.test(v)))return fail('Use raw integer amounts');
+ const path:(Address|null)[]=Array.isArray(b.path)?(b.path as unknown[]).map(address):[];
+ if(!adapter||!tokenIn||!tokenOut||path.length<2||path.length>4||path.some((x:Address|null)=>x===null)||tokenIn===tokenOut)return fail('Invalid adapter or path');
+ if(typeof b.amountIn!=='string'||typeof b.quotedOut!=='string'||typeof b.minOut!=='string'||![b.amountIn,b.quotedOut,b.minOut].every((v:string)=>/^\d+$/.test(v)))return fail('Use raw integer amounts');
  const amountIn=BigInt(b.amountIn),quotedOut=BigInt(b.quotedOut),minOut=BigInt(b.minOut);
  if(amountIn<1n||quotedOut<1n||minOut<1n||amountIn>10n**60n||quotedOut>10n**60n||minOut>quotedOut)return fail('Invalid amount or minimum output');
  // Mirrors execution router maximum quote-to-minimum spread (5%). A quote is not independently verified here.
@@ -20,7 +21,7 @@ export async function POST(req:NextRequest){try{
  const authorized=await client.readContract({address:callerRouter,abi,functionName:'approvedAdapter',args:[adapter]}).catch(()=>false);
  if(!authorized)return fail('One-time adapter authorization is missing; no per-route approval is needed',409);
  const deadline=BigInt(Math.floor(Date.now()/1000)+600);
- const normalized=path as `0x${string}`[];
+ const normalized:Address[]=path.filter((x:Address|null):x is Address=>x!==null);
  const compatible=await client.readContract({address:adapter,abi,functionName:'inspectPath',args:[tokenIn,tokenOut,normalized,deadline]});
  if(!compatible)return fail('Adapter rejected the route',409);
  const routeData=encodeAbiParameters([{type:'address[]'},{type:'uint256'}],[normalized,deadline]);
