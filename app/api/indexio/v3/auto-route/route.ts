@@ -8,7 +8,8 @@ const USDC='0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const WETH='0x4200000000000000000000000000000000000006';
 const MAX_AMOUNT=10n**60n;
 const rpc=process.env.BASE_RPC_URL||process.env.NEXT_PUBLIC_BASE_RPC_URL||'https://mainnet.base.org';
-const addr=(x:unknown)=>typeof x==='string'&&isAddress(x)?getAddress(x):null;
+type Address = `0x${string}`;
+const addr=(x:unknown):Address|null=>typeof x==='string'&&isAddress(x)?getAddress(x):null;
 const fail=(message:string,status=400)=>NextResponse.json({error:message},{status});
 export async function POST(req:NextRequest){try{
  const body=await req.json();const adapter=addr(body.adapter),tokenIn=addr(body.tokenIn),tokenOut=addr(body.tokenOut);
@@ -23,9 +24,9 @@ export async function POST(req:NextRequest){try{
  const factory=await client.readContract({address:dexRouter,abi,functionName:'factory'});
  const authorized=await client.readContract({address:callerRouter,abi,functionName:'approvedAdapter',args:[adapter]}).catch(()=>false);
  if(!await client.getCode({address:factory}))return fail('DEX factory has no code');
- const extras=Array.isArray(body.intermediates)?body.intermediates.slice(0,4).map(addr).filter((a):a is `0x${string}`=>!!a):[];
- const mids=[USDC,WETH,...extras].map(x=>getAddress(x)).filter((x,i,a)=>x!==tokenIn&&x!==tokenOut&&a.indexOf(x)===i);
- const candidates=[[tokenIn,tokenOut],...mids.map(m=>[tokenIn,m,tokenOut]),...mids.flatMap((a,i)=>mids.filter((b,j)=>i!==j).map(b=>[tokenIn,a,b,tokenOut]))];
+ const extras:Address[]=Array.isArray(body.intermediates)?(body.intermediates as unknown[]).slice(0,4).map(addr).filter((a:Address|null):a is Address=>a!==null):[];
+ const mids:Address[]=[USDC,WETH,...extras].map((x:string):Address=>getAddress(x)).filter((x:Address,i:number,a:Address[])=>x!==tokenIn&&x!==tokenOut&&a.indexOf(x)===i);
+ const candidates:Address[][]=[[tokenIn,tokenOut],...mids.map((m:Address):Address[]=>[tokenIn,m,tokenOut]),...mids.flatMap((a:Address,i:number)=>mids.filter((_b:Address,j:number)=>i!==j).map((b:Address):Address[]=>[tokenIn,a,b,tokenOut]))];
  const deadline=BigInt(Math.floor(Date.now()/1000)+600);
  const pairCache=new Map<string,{pair:`0x${string}`,reserve0:bigint,reserve1:bigint,token0:`0x${string}`}|null>();
  async function pairFor(a:`0x${string}`,b:`0x${string}`){const key=[a.toLowerCase(),b.toLowerCase()].sort().join(':');if(pairCache.has(key))return pairCache.get(key)!;
