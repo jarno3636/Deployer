@@ -43,7 +43,7 @@ contract IndexioRestrictedSwapAdapterV3 is ReentrancyGuard {
         require(msg.sender == callerRouter, "router");
         require(
             tokenIn != address(0) && tokenOut != address(0) && recipient != address(0) &&
-            tokenIn != tokenOut && amountIn > 0 && minOut > 0,
+            tokenIn != tokenOut && recipient != address(this) && recipient != tokenIn && recipient != tokenOut && amountIn > 0 && minOut > 0,
             "input"
         );
         require(routeData.length >= 4 && routeData.length <= MAX_ROUTE_DATA_BYTES, "0x data");

@@ -65,6 +65,8 @@ contract IndexioLifiSwapAdapterV3 is Ownable2Step, ReentrancyGuard {
         (address target,address spender,bytes memory callData)=abi.decode(routeData,(address,address,bytes));
         if(callData.length<4)revert InvalidRoute();
         bytes4 selector; assembly { selector := mload(add(callData,32)) }
+        if(target==address(this)||spender==address(this)||recipient==address(this)||recipient==tokenIn||recipient==tokenOut)revert InvalidRoute();
+        if(target.code.length==0||spender.code.length==0)revert UntrustedLifiInfrastructure();
         if(!allowedTarget[target]||!allowedSpender[spender]||!allowedSelector[selector])revert UntrustedLifiInfrastructure();
 
         uint256 inBefore=IERC20(tokenIn).balanceOf(address(this)); if(inBefore<amountIn)revert InvalidAmount();

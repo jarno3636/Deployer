@@ -100,6 +100,8 @@ contract IndexioExecutionRouterV3 is Ownable2Step,ReentrancyGuard {
         address[] memory assets=IVaultExecV3(vault).assets();
         uint16[] memory weights=IVaultExecV3(vault).weights();
         require(legs.length==assets.length&&weights.length==assets.length,"legs");
+        // Preserve funds already in the shared router; a seed must not use or strand them.
+        uint256 settlementBaseline=IERC20(settlementToken).balanceOf(address(this));
         _pullExactSettlement(msg.sender,settlementAmountIn);
         uint256[] memory gross=new uint256[](assets.length);
         uint256 allocated;
@@ -119,6 +121,9 @@ contract IndexioExecutionRouterV3 is Ownable2Step,ReentrancyGuard {
         for(uint256 i;i<assets.length;i++)IERC20(assets[i]).forceApprove(vault,gross[i]);
         sharesOut=IVaultExecV3(vault).seed(receiver,gross,sharesOut);
         for(uint256 i;i<assets.length;i++)IERC20(assets[i]).forceApprove(vault,0);
+        // A seed must consume the entire settlement contribution, including any
+        // direct-USDC constituent. Do not silently retain a buyer's settlement.
+        require(IERC20(settlementToken).balanceOf(address(this))==settlementBaseline,"seed settlement residue");
         emit IndexSeeded(creator,vault,settlementAmountIn,sharesOut,price);
     }
 
