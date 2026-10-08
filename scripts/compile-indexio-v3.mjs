@@ -10,7 +10,7 @@ let g=`// AUTO-GENERATED V3\nexport const indexioV3CompilerVersion=${JSON.string
 // This contains no secrets; it is deterministic contract creation bytecode used by Indexio.world.
 fs.mkdirSync(path.join(root,'public'),{recursive:true});
 fs.writeFileSync(path.join(root,'public/indexio-v3-vault-artifact.json'),JSON.stringify({
-  version:'3.1.1',
+  version:'3.3.2-rc',
   network:'Base Mainnet',
   chainId:8453,
   compilerVersion:solc.version(),
