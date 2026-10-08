@@ -2,7 +2,7 @@ import {NextRequest,NextResponse} from 'next/server';
 import {createPublicClient,http,isAddress,getAddress,parseAbi} from 'viem';
 import {base} from 'viem/chains';
 export const runtime='nodejs';export const dynamic='force-dynamic';
-const abi=parseAbi(['function dexRouter() view returns(address)','function callerRouter() view returns(address)','function factory() view returns(address)','function getPair(address,address) view returns(address)','function getReserves() view returns(uint112,uint112,uint32)','function token0() view returns(address)','function decimals() view returns(uint8)','function inspectPath(address,address,address[],uint256) view returns(bool)']);
+const abi=parseAbi(['function dexRouter() view returns(address)','function callerRouter() view returns(address)','function factory() view returns(address)','function getPair(address,address) view returns(address)','function getReserves() view returns(uint112,uint112,uint32)','function token0() view returns(address)','function decimals() view returns(uint8)','function approvedAdapter(address) view returns(bool)','function inspectPath(address,address,address[],uint256) view returns(bool)']);
 const ZERO='0x0000000000000000000000000000000000000000';
 const USDC='0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913';
 const WETH='0x4200000000000000000000000000000000000006';
@@ -21,6 +21,7 @@ export async function POST(req:NextRequest){try{
  const callerRouter=await client.readContract({address:adapter,abi,functionName:'callerRouter'});
  if(!await client.getCode({address:dexRouter}))return fail('Adapter router has no code');
  const factory=await client.readContract({address:dexRouter,abi,functionName:'factory'});
+ const authorized=await client.readContract({address:callerRouter,abi,functionName:'approvedAdapter',args:[adapter]}).catch(()=>false);
  if(!await client.getCode({address:factory}))return fail('DEX factory has no code');
  const extras=Array.isArray(body.intermediates)?body.intermediates.slice(0,4).map(addr).filter((a):a is `0x${string}`=>!!a):[];
  const mids=[USDC,WETH,...extras].map(x=>getAddress(x)).filter((x,i,a)=>x!==tokenIn&&x!==tokenOut&&a.indexOf(x)===i);
@@ -43,5 +44,5 @@ export async function POST(req:NextRequest){try{
  results.push({path,pairs,indicativeOut:value.toString(),hops:path.length-1,compatible});
  }
  results.sort((a,b)=>BigInt(a.indicativeOut)===BigInt(b.indicativeOut)?a.hops-b.hops:BigInt(a.indicativeOut)>BigInt(b.indicativeOut)?-1:1);
- return NextResponse.json({chainId:8453,adapter,dexRouter,factory,callerRouter,amountIn:amountIn.toString(),routes:results.slice(0,12),deadline:deadline.toString(),model:'Uniswap V2 0.30% fee, no transfer taxes',executionReady:false,warning:'Discovery only. Reserve estimates do NOT account for variable DEX fees, fee-on-transfer tokens, MEV or price movement. Do not derive minimum output or tax limits from these estimates. Execute only after independent simulation and user-confirmed limits.'});
+ return NextResponse.json({chainId:8453,adapter,dexRouter,factory,callerRouter,authorized,amountIn:amountIn.toString(),routes:results.slice(0,12),deadline:deadline.toString(),model:'Uniswap V2 0.30% fee, no transfer taxes',executionReady:false,warning:'Discovery only. Reserve estimates do NOT account for variable DEX fees, fee-on-transfer tokens, MEV or price movement. Do not derive minimum output or tax limits from these estimates. Execute only after independent simulation and user-confirmed limits.'});
  }catch(e){return fail(e instanceof Error?e.message:'Discovery failed',502);}}
