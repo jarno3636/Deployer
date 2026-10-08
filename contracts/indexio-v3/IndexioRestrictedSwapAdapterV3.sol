@@ -11,6 +11,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///      Indexio still enforces token pair, exact amountIn, minOut, quote/slippage bounds and transaction deadline.
 contract IndexioRestrictedSwapAdapterV3 is ReentrancyGuard {
     using SafeERC20 for IERC20;
+    bytes32 public constant RELEASE_ID = keccak256("INDEXIO_V3_3_4_AUDIT_RC");
 
     uint256 public constant MAX_ROUTE_DATA_BYTES = 16_384;
     address public constant ZERO_X_ALLOWANCE_HOLDER = 0x0000000000001fF3684f28c67538d4D072C22734;
@@ -48,7 +49,10 @@ contract IndexioRestrictedSwapAdapterV3 is ReentrancyGuard {
         require(routeData.length >= 4 && routeData.length <= MAX_ROUTE_DATA_BYTES, "0x data");
 
         uint256 inBefore = IERC20(tokenIn).balanceOf(address(this));
-        require(inBefore == amountIn, "unexpected input balance");
+        // Accidental token donations must not disable swaps for everyone. Record
+        // the pre-existing balance and require the call to spend this swap's
+        // input only; never grant an allowance for the older balance.
+        require(inBefore >= amountIn, "insufficient input balance");
         uint256 adapterOutBefore = IERC20(tokenOut).balanceOf(address(this));
         uint256 outBefore = IERC20(tokenOut).balanceOf(recipient);
 
@@ -61,7 +65,8 @@ contract IndexioRestrictedSwapAdapterV3 is ReentrancyGuard {
             revert("0x swap failed");
         }
 
-        require(IERC20(tokenIn).balanceOf(address(this)) == 0, "input not consumed");
+        uint256 inAfter = IERC20(tokenIn).balanceOf(address(this));
+        require(inAfter <= inBefore && inBefore - inAfter == amountIn, "input not consumed");
         require(IERC20(tokenOut).balanceOf(address(this)) == adapterOutBefore, "adapter output residue");
         amountOut = IERC20(tokenOut).balanceOf(recipient) - outBefore;
         require(amountOut >= minOut, "slippage");

@@ -12,6 +12,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///      input consumption and recipient minimum-output balance deltas.
 contract IndexioLifiSwapAdapterV3 is Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
+    bytes32 public constant RELEASE_ID=keccak256("INDEXIO_V3_3_4_AUDIT_RC");
     uint256 public constant MAX_ROUTE_DATA_BYTES = 16_384;
     uint256 public constant ALLOWLIST_DELAY = 6 hours;
     address public immutable callerRouter;
@@ -67,12 +68,16 @@ contract IndexioLifiSwapAdapterV3 is Ownable2Step, ReentrancyGuard {
         if(!allowedTarget[target]||!allowedSpender[spender]||!allowedSelector[selector])revert UntrustedLifiInfrastructure();
 
         uint256 inBefore=IERC20(tokenIn).balanceOf(address(this)); if(inBefore<amountIn)revert InvalidAmount();
+        // The adapter is shared between vaults. A route must not leave its
+        // output behind or consume tokens that arrived before this swap.
+        uint256 adapterOutBefore=IERC20(tokenOut).balanceOf(address(this));
         uint256 outBefore=IERC20(tokenOut).balanceOf(recipient);
         IERC20(tokenIn).forceApprove(spender,amountIn);
         (bool ok,bytes memory reason)=target.call(callData);
         IERC20(tokenIn).forceApprove(spender,0);
         if(!ok)revert SwapFailed(reason);
-        uint256 inAfter=IERC20(tokenIn).balanceOf(address(this)); if(inAfter+amountIn!=inBefore)revert InputNotConsumed();
+        uint256 inAfter=IERC20(tokenIn).balanceOf(address(this)); if(inAfter>inBefore||inBefore-inAfter!=amountIn)revert InputNotConsumed();
+        if(IERC20(tokenOut).balanceOf(address(this))!=adapterOutBefore)revert InvalidRoute();
         amountOut=IERC20(tokenOut).balanceOf(recipient)-outBefore; if(amountOut<minOut)revert Slippage();
         emit SwapExecuted(tokenIn,tokenOut,recipient,amountIn,amountOut,target,spender,selector);
     }

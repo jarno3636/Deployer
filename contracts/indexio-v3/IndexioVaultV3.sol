@@ -34,6 +34,9 @@ contract IndexioVaultV3 is ReentrancyGuard {
     using SafeERC20 for IERC20;
     uint16 constant BPS=10_000;
     uint16 public constant INDEXIO_FEE_BPS=100;
+    // Reject substantial disproportionate payments rather than gifting an
+    // unintended excess of one constituent to existing shareholders.
+    uint16 public constant MAX_DEPOSIT_IMBALANCE_BPS=100;
 
     address public immutable factory;
     address public immutable creator;
@@ -154,6 +157,7 @@ contract IndexioVaultV3 is ReentrancyGuard {
         require(candidate>0,"shares");
         address treasury=IFactoryV3(factory).feeTreasury();
         shares=type(uint256).max;
+        uint256[] memory capacities=new uint256[](_assets.length);
         for(uint256 i;i<_assets.length;i++){
             uint256 requiredActual=Math.mulDiv(beforeBal[i],candidate,supply,Math.Rounding.Ceil);
             uint256 rbps=expectedReceiveBps(_assets[i]);
@@ -166,9 +170,14 @@ contract IndexioVaultV3 is ReentrancyGuard {
             uint256 actualNet=_pullReceived(_assets[i],msg.sender,address(this),nominalNet);
             if(protocolFee>0)_pullReceived(_assets[i],msg.sender,treasury,protocolFee);
             if(creatorFee>0)_pullReceived(_assets[i],msg.sender,creator,creatorFee);
-            shares=Math.min(shares,Math.mulDiv(actualNet,supply,beforeBal[i]));
+            capacities[i]=Math.mulDiv(actualNet,supply,beforeBal[i]);
+            shares=Math.min(shares,capacities[i]);
         }
         require(shares>0&&shares>=minSharesOut,"shares");
+        for(uint256 i;i<capacities.length;i++){
+            uint256 tolerance=Math.mulDiv(shares,MAX_DEPOSIT_IMBALANCE_BPS,BPS,Math.Rounding.Ceil);
+            require(capacities[i]-shares<=tolerance+1,"imbalanced deposit");
+        }
         shareToken.mint(receiver,shares);
         emit Deposited(msg.sender,receiver,shares);
     }
@@ -283,6 +292,10 @@ contract IndexioVaultV3 is ReentrancyGuard {
     }
 
     function _pushReceived(address token,address to,uint256 amount) internal returns(uint256 received) {
+        // A tiny proportional withdrawal can round one constituent to zero.
+        // Skipping that leg allows holders to exit instead of reverting every
+        // small redemption. All nonzero transfers still enforce tax limits.
+        if(amount==0)return 0;
         uint256 senderBefore=IERC20(token).balanceOf(address(this));
         uint256 beforeBal=IERC20(token).balanceOf(to);
         IERC20(token).safeTransfer(to,amount);

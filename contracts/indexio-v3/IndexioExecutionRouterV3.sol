@@ -45,6 +45,7 @@ contract IndexioExecutionRouterV3 is Ownable2Step,ReentrancyGuard {
     uint256 public constant MIN_GROSS_SEED_USD18=25e18;
     uint256 public constant MAX_SLIPPAGE_BPS=500;
     uint256 public constant MAX_BUY_REFUND_BPS=25;
+    bytes32 public constant RELEASE_ID=keccak256("INDEXIO_V3_3_4_AUDIT_RC");
     address public immutable factory;
     address public immutable settlementToken;
     mapping(address=>bool) public approvedAdapter;
@@ -129,6 +130,9 @@ contract IndexioExecutionRouterV3 is Ownable2Step,ReentrancyGuard {
         address[] memory assets=IVaultExecV3(vault).assets();
         uint16[] memory weights=IVaultExecV3(vault).weights();
         require(legs.length==assets.length&&weights.length==assets.length,"legs");
+        // Snapshot before collecting the buyer's USDC. Otherwise an index
+        // containing USDC can strand the unaccepted part of that USDC leg.
+        uint256 settlementBaseline=IERC20(settlementToken).balanceOf(address(this));
         _pullExactSettlement(msg.sender,settlementAmountIn);
         uint256[] memory gross=new uint256[](assets.length);
         uint256[] memory beforeAsset=new uint256[](assets.length);
@@ -149,15 +153,24 @@ contract IndexioExecutionRouterV3 is Ownable2Step,ReentrancyGuard {
         for(uint256 i;i<assets.length;i++){
             IERC20(assets[i]).forceApprove(vault,0);
             uint256 bal=IERC20(assets[i]).balanceOf(address(this));
-            uint256 refund=bal>beforeAsset[i]?bal-beforeAsset[i]:0;
+            // Settlement refunds are handled against the pre-pull baseline.
+            uint256 refund=assets[i]==settlementToken?0:bal>beforeAsset[i]?bal-beforeAsset[i]:0;
             require(refund<=Math.mulDiv(gross[i],allowedRefundBps,BPS,Math.Rounding.Ceil),"imbalanced buy");
             if(refund>0)_pushMeasured(assets[i],msg.sender,refund);
+        }
+        uint256 settlementBalance=IERC20(settlementToken).balanceOf(address(this));
+        require(settlementBalance>=settlementBaseline,"settlement deficit");
+        uint256 settlementRefund=settlementBalance-settlementBaseline;
+        require(settlementRefund<=Math.mulDiv(settlementAmountIn,allowedRefundBps,BPS,Math.Rounding.Ceil),"imbalanced settlement");
+        if(settlementRefund>0){
+            IERC20(settlementToken).safeTransfer(msg.sender,settlementRefund);
+            require(IERC20(settlementToken).balanceOf(address(this))==settlementBaseline,"settlement refund");
         }
         emit IndexBought(msg.sender,vault,settlementAmountIn,sharesOut);
     }
 
     function sellIndex(address vault,uint256 sharesIn,BuyLeg[] calldata sellLegs,uint256 minSettlementOut,address receiver,uint256 deadline) external nonReentrant returns(uint256 settlementOut){
-        require(block.timestamp<=deadline&&receiver!=address(0)&&sharesIn>0,"input/deadline");
+        require(block.timestamp<=deadline&&receiver!=address(0)&&sharesIn>0&&minSettlementOut>0,"input/deadline");
         require(IFactoryExecV3(factory).isVault(vault)&&IVaultExecV3(vault).seeded(),"vault");
         address safety=IFactoryExecV3(factory).safetyController();
         require(!ISafetyExecV3(safety).tradingPaused(vault),"trading paused");
@@ -168,6 +181,12 @@ contract IndexioExecutionRouterV3 is Ownable2Step,ReentrancyGuard {
         uint256[] memory amounts=IVaultExecV3(vault).redeemFromRouter(msg.sender,sharesIn,address(this),mins,deadline);
         for(uint256 i;i<assets.length;i++){
             uint256 routerAmount=amounts[i];
+            // A very small redemption may contain zero units of some assets.
+            // Never attempt to trade such a leg, but demand an empty route.
+            if(routerAmount==0){
+                require(sellLegs[i].amountIn==0&&sellLegs[i].adapter==address(0)&&sellLegs[i].minAmountOut==0&&sellLegs[i].quotedAmountOut==0&&sellLegs[i].routeData.length==0,"empty leg");
+                continue;
+            }
             require(sellLegs[i].amountIn==0||sellLegs[i].amountIn==routerAmount,"amount"); // zero means use measured receipt
             if(assets[i]==settlementToken){
                 require(sellLegs[i].adapter==address(0)&&sellLegs[i].routeData.length==0&&sellLegs[i].quotedAmountOut==routerAmount&&sellLegs[i].minAmountOut<=routerAmount,"direct");
