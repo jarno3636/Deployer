@@ -16,6 +16,16 @@ contract IndexioLifiSwapAdapterV3 is Ownable2Step, ReentrancyGuard {
     uint256 public constant ALLOWLIST_DELAY = 6 hours;
     address public immutable callerRouter;
     bool public bootstrapFinalized;
+    // Recovery is deliberately fail-closed. An independent protection oracle must
+    // positively certify the token as unrelated to every active/historical index.
+    address public immutable recoveryTreasury;
+    address public immutable recoveryOracle;
+    uint256 public constant RECOVERY_DELAY = 48 hours;
+    struct Recovery { uint256 amount; uint256 validAt; }
+    mapping(address => Recovery) public pendingRecovery;
+    event RecoveryProposed(address indexed token,uint256 amount,uint256 validAt);
+    event RecoveryCancelled(address indexed token);
+
 
     mapping(address => bool) public allowedTarget;
     mapping(address => bool) public allowedSpender;
@@ -34,9 +44,12 @@ contract IndexioLifiSwapAdapterV3 is Ownable2Step, ReentrancyGuard {
     event SwapExecuted(address indexed tokenIn,address indexed tokenOut,address indexed recipient,uint256 amountIn,uint256 amountOut,address target,address spender,bytes4 selector);
     event AccidentalTokenRecovered(address indexed token,address indexed recipient,uint256 amount);
 
-    constructor(address owner_, address callerRouter_) Ownable(owner_) {
+    constructor(address owner_, address callerRouter_, address recoveryTreasury_, address recoveryOracle_) Ownable(owner_) {
         if(owner_==address(0)||callerRouter_==address(0)||callerRouter_.code.length==0) revert InvalidAddress();
+        if(recoveryTreasury_==address(0)||recoveryOracle_.code.length==0) revert InvalidAddress();
         callerRouter=callerRouter_;
+        recoveryTreasury=recoveryTreasury_;
+        recoveryOracle=recoveryOracle_;
     }
     modifier onlyCaller(){if(msg.sender!=callerRouter)revert OnlyCallerRouter();_;}
 
@@ -79,8 +92,33 @@ contract IndexioLifiSwapAdapterV3 is Ownable2Step, ReentrancyGuard {
         emit SwapExecuted(tokenIn,tokenOut,recipient,amountIn,amountOut,target,spender,selector);
     }
 
-    function recoverAccidentalToken(address token,uint256 amount) external onlyOwner nonReentrant {
-        if(token==address(0)||amount==0)revert InvalidAmount();
-        revert("recovery disabled: pending swap balances cannot be distinguished safely");
+    /// @notice Oracle must fail closed on unknown assets, historical holdings,
+    ///         income tokens, vault shares, settlement assets and pending operations.
+    function proposeRecovery(address token,uint256 amount) external onlyOwner {
+        if(token.code.length==0||amount==0) revert InvalidAmount();
+        if(!_recoverable(token,amount)) revert InvalidRoute();
+        uint256 when=block.timestamp+RECOVERY_DELAY;
+        pendingRecovery[token]=Recovery(amount,when);
+        emit RecoveryProposed(token,amount,when);
+    }
+    function cancelRecovery(address token) external onlyOwner {
+        delete pendingRecovery[token]; emit RecoveryCancelled(token);
+    }
+    function executeRecovery(address token) external onlyOwner nonReentrant {
+        Recovery memory r=pendingRecovery[token];
+        if(r.validAt==0||block.timestamp<r.validAt) revert TooEarly();
+        if(!_recoverable(token,r.amount)) revert InvalidRoute();
+        delete pendingRecovery[token];
+        IERC20(token).safeTransfer(recoveryTreasury,r.amount);
+        emit AccidentalTokenRecovered(token,recoveryTreasury,r.amount);
+    }
+    function _recoverable(address token,uint256 amount) internal view returns(bool) {
+        if(token.code.length==0||amount==0||IERC20(token).balanceOf(address(this))<amount) return false;
+        // ERC20 allowance left over from a swap must never be recoverable.
+        // Oracle is a separately deployed immutable protocol-wide guardian.
+        (bool ok,bytes memory data)=recoveryOracle.staticcall(
+            abi.encodeWithSignature("canRecover(address,address,uint256)",address(this),token,amount)
+        );
+        return ok&&data.length==32&&abi.decode(data,(bool));
     }
 }
