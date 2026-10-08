@@ -11,7 +11,7 @@ import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol
 ///      Indexio still enforces token pair, exact amountIn, minOut, quote/slippage bounds and transaction deadline.
 contract IndexioRestrictedSwapAdapterV3 is ReentrancyGuard {
     using SafeERC20 for IERC20;
-    bytes32 public constant RELEASE_ID = keccak256("INDEXIO_V3_3_4_AUDIT_RC");
+    bytes32 public constant RELEASE_ID = keccak256("INDEXIO_V3_3_6_HARDENED_RC");
 
     uint256 public constant MAX_ROUTE_DATA_BYTES = 16_384;
     address public constant ZERO_X_ALLOWANCE_HOLDER = 0x0000000000001fF3684f28c67538d4D072C22734;

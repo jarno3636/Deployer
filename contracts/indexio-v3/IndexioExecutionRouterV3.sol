@@ -45,7 +45,7 @@ contract IndexioExecutionRouterV3 is Ownable2Step,ReentrancyGuard {
     uint256 public constant MIN_GROSS_SEED_USD18=25e18;
     uint256 public constant MAX_SLIPPAGE_BPS=500;
     uint256 public constant MAX_BUY_REFUND_BPS=25;
-    bytes32 public constant RELEASE_ID=keccak256("INDEXIO_V3_3_4_AUDIT_RC");
+    bytes32 public constant RELEASE_ID=keccak256("INDEXIO_V3_3_6_HARDENED_RC");
     address public immutable factory;
     address public immutable settlementToken;
     mapping(address=>bool) public approvedAdapter;
@@ -219,8 +219,21 @@ contract IndexioExecutionRouterV3 is Ownable2Step,ReentrancyGuard {
         bytes32 executionHash=keccak256(abi.encode(trades));
         address gov=IVaultExecV3(vault).governor();
         require(IGovernorExecV3(gov).executable(proposalId,executionHash),"proposal/plan");
+        // Reject malformed target baskets before any external swap call.
+        require(targetAssets.length>0 && targetAssets.length==targetWeights.length,"target basket");
+        uint256 targetWeightTotal;
+        for(uint256 i;i<targetAssets.length;i++){
+            require(targetAssets[i]!=address(0) && targetWeights[i]>0,"target asset");
+            for(uint256 j=0;j<i;j++)require(targetAssets[i]!=targetAssets[j],"duplicate target");
+            targetWeightTotal+=targetWeights[i];
+        }
+        require(targetWeightTotal==BPS,"target weights");
+        address[] memory currentAssets=IVaultExecV3(vault).assets();
         for(uint256 i;i<trades.length;i++){
             RebalanceLeg calldata t=trades[i];
+            bool sourceOk;
+            for(uint256 j;j<currentAssets.length;j++)if(t.tokenIn==currentAssets[j]){sourceOk=true;break;}
+            require(sourceOk,"source not held");
             bool targetOk;
             for(uint256 j;j<targetAssets.length;j++)if(t.tokenOut==targetAssets[j]){targetOk=true;break;}
             require(targetOk&&t.tokenIn!=t.tokenOut&&t.amountIn>0&&approvedAdapter[t.adapter],"trade");
