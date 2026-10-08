@@ -79,6 +79,18 @@ contract IndexioLifiSwapAdapterV3 is Ownable2Step, ReentrancyGuard {
     function _setSpender(address spender,bool allowed) internal { if(spender==address(0)||(allowed&&spender.code.length==0)) revert InvalidAddress(); allowedSpender[spender]=allowed; emit SpenderSet(spender,allowed); }
     function _setSelector(bytes4 selector,bool allowed) internal { if(selector==bytes4(0)) revert InvalidRoute(); allowedSelector[selector]=allowed; emit SelectorSet(selector,allowed); }
 
+    /// @notice Read-only route permission diagnostics for the deployer test console.
+    /// @dev This is not a trade simulation and does not authorize arbitrary calldata.
+    function inspectRoute(address target,address spender,bytes4 selector) external view returns (
+        bool targetOk,bool spenderOk,bool selectorOk,bool pairOk,bool executable
+    ) {
+        targetOk = target != address(this) && target.code.length > 0 && allowedTarget[target];
+        spenderOk = spender != address(this) && spender.code.length > 0 && allowedSpender[spender];
+        selectorOk = selector != bytes4(0) && allowedSelector[selector];
+        pairOk = allowedTargetSelector[keccak256(abi.encode(target,selector))];
+        executable = targetOk && spenderOk && selectorOk && pairOk;
+    }
+
     function swapExactInput(address tokenIn,address tokenOut,uint256 amountIn,uint256 minOut,address recipient,bytes calldata routeData) external onlyCaller nonReentrant returns(uint256 amountOut){
         if(tokenIn==address(0)||tokenOut==address(0)||recipient==address(0)||tokenIn==tokenOut||amountIn==0||minOut==0)revert InvalidAmount();
         if(routeData.length==0||routeData.length>MAX_ROUTE_DATA_BYTES)revert InvalidRoute();
