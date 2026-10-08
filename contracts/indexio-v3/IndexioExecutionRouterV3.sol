@@ -168,7 +168,7 @@ contract IndexioExecutionRouterV3 is Ownable2Step,ReentrancyGuard {
         uint256[] memory amounts=IVaultExecV3(vault).redeemFromRouter(msg.sender,sharesIn,address(this),mins,deadline);
         for(uint256 i;i<assets.length;i++){
             uint256 routerAmount=amounts[i];
-            require(sellLegs[i].amountIn==routerAmount,"amount");
+            require(sellLegs[i].amountIn==0||sellLegs[i].amountIn==routerAmount,"amount"); // zero means use measured receipt
             if(assets[i]==settlementToken){
                 require(sellLegs[i].adapter==address(0)&&sellLegs[i].routeData.length==0&&sellLegs[i].quotedAmountOut==routerAmount&&sellLegs[i].minAmountOut<=routerAmount,"direct");
                 continue;
@@ -242,6 +242,10 @@ contract IndexioExecutionRouterV3 is Ownable2Step,ReentrancyGuard {
         require(senderBefore>=senderAfter&&senderBefore-senderAfter==amount,"sender debit");
         received=IERC20(token).balanceOf(to)-b;
         require(received>0&&received<=amount,"received");
+        uint256 bps=ITransferPolicyExecV3(IFactoryExecV3(factory).transferPolicy()).expectedReceiveBps(token);
+        uint256 floorAmount=Math.mulDiv(amount,bps,BPS);
+        if(floorAmount>0)floorAmount-=1;
+        require(received>=floorAmount,"transfer exceeds policy");
         if(received!=amount)emit TransferAdjusted(token,to,amount,received);
     }
 }

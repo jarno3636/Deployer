@@ -89,7 +89,7 @@ contract IndexioVaultV3 is ReentrancyGuard {
     function assets() external view returns(address[] memory){return _assets;}
     function weights() external view returns(uint16[] memory){return _weights;}
     function executionRouter() external view returns(address){return IFactoryV3(factory).executionRouter();}
-    function expectedReceiveBps(address token) public view returns(uint16){uint16 observed=lastObservedReceiveBps[token];return observed>0?observed:ITransferPolicyV3(IFactoryV3(factory).transferPolicy()).expectedReceiveBps(token);}
+    function expectedReceiveBps(address token) public view returns(uint16){return ITransferPolicyV3(IFactoryV3(factory).transferPolicy()).expectedReceiveBps(token);}
 
     /// @notice Creator may freely fix assets/weights before the first successful investment.
     /// @dev Once seeded, direct creator editing is permanently disabled and shareholder governance takes over.
@@ -225,7 +225,7 @@ contract IndexioVaultV3 is ReentrancyGuard {
         emit Redeemed(owner,receiver,shares);
     }
 
-    function transferForRebalance(address token,address to,uint256 amount) external ready returns(uint256 received) {
+    function transferForRebalance(address token,address to,uint256 amount) external ready nonReentrant returns(uint256 received) {
         require(msg.sender==IFactoryV3(factory).executionRouter()&&to!=address(0)&&amount>0,"router/input");
         bool current;
         for(uint256 i;i<_assets.length;i++)if(token==_assets[i]){current=true;break;}
@@ -278,6 +278,7 @@ contract IndexioVaultV3 is ReentrancyGuard {
         require(senderBefore>=senderAfter&&senderBefore-senderAfter==amount,"sender debit");
         received=IERC20(token).balanceOf(to)-beforeBal;
         require(received>0&&received<=amount,"received");
+        _enforceTransferFloor(token,amount,received);
         _recordTransfer(token,to,amount,received);
     }
 
@@ -289,13 +290,22 @@ contract IndexioVaultV3 is ReentrancyGuard {
         require(senderBefore>=senderAfter&&senderBefore-senderAfter==amount,"sender debit");
         received=IERC20(token).balanceOf(to)-beforeBal;
         require(received>0&&received<=amount,"received");
+        _enforceTransferFloor(token,amount,received);
         _recordTransfer(token,to,amount,received);
     }
 
     function _recordTransfer(address token,address to,uint256 requested,uint256 received) internal {
         uint256 bps=Math.min(uint256(BPS),Math.mulDiv(received,BPS,requested));
-        if(to==address(this))lastObservedReceiveBps[token]=uint16(bps);
+        // Observed rates are informational only: never override the owner-controlled policy.
         emit TransferBehaviorObserved(token,to,requested,received,uint16(bps));
+    }
+
+    function _enforceTransferFloor(address token,uint256 requested,uint256 received) internal view {
+        uint256 policyBps=ITransferPolicyV3(IFactoryV3(factory).transferPolicy()).expectedReceiveBps(token);
+        // One smallest token unit accommodates integer rounding in fee-on-transfer implementations.
+        uint256 minimum=Math.mulDiv(requested,policyBps,BPS);
+        if(minimum>0)minimum-=1;
+        require(received>=minimum,"transfer exceeds policy");
     }
 
     function _validate(address[] memory a,uint16[] memory w) internal view {

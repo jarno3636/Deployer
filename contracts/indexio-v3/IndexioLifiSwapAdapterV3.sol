@@ -81,6 +81,6 @@ contract IndexioLifiSwapAdapterV3 is Ownable2Step, ReentrancyGuard {
 
     function recoverAccidentalToken(address token,uint256 amount) external onlyOwner nonReentrant {
         if(token==address(0)||amount==0)revert InvalidAmount();
-        address recipient=owner(); IERC20(token).safeTransfer(recipient,amount); emit AccidentalTokenRecovered(token,recipient,amount);
+        revert("recovery disabled: pending swap balances cannot be distinguished safely");
     }
 }
