@@ -9,7 +9,7 @@ const address=(v:unknown)=>typeof v==='string'&&isAddress(v)?getAddress(v):null;
 const bad=(reason:string,status=400)=>NextResponse.json({error:reason},{status});
 export async function POST(req:NextRequest){try{
  const b=await req.json();const adapter=address(b.adapter),tokenIn=address(b.tokenIn),tokenOut=address(b.tokenOut),recipient=address(b.recipient);
- const path=Array.isArray(b.path)?b.path.map(address):[];
+ const path: (`0x${string}` | null)[] = Array.isArray(b.path) ? (b.path as unknown[]).map(address) : [];
  if(!adapter||!tokenIn||!tokenOut||!recipient||path.length<2||path.length>4||path.some(x=>!x))return bad('Invalid addresses or path');
  if(typeof b.amountIn!=='string'||typeof b.minOut!=='string'||!/^[0-9]+$/.test(b.amountIn)||!/^[0-9]+$/.test(b.minOut))return bad('Raw integer amounts required');
  const amountIn=BigInt(b.amountIn),minOut=BigInt(b.minOut);
