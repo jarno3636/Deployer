@@ -29,5 +29,5 @@ export async function POST(req:NextRequest){try{
  try{
   const result=await client.call({account:callerRouter,to:adapter,data,gas:5_000_000n});
   return NextResponse.json({compatible:true,approved,simulated:true,callerRouter,dexRouter,adapterInputBalance:adapterInputBalance.toString(),resultData:result.data,warning:'eth_call success is conditional on current state and adapter funding. It does not guarantee later execution, tax compatibility, or protection from price changes.'});
- }catch(e){return NextResponse.json({compatible:true,approved,simulated:false,callerRouter,dexRouter,adapterInputBalance:adapterInputBalance.toString(),reason:e instanceof Error?e.shortMessage||e.message:'Simulation reverted',warning:'An unfunded adapter normally reverts. This is not a funded Base-fork simulation and does not establish route incompatibility.'});}
+ }catch(e){return NextResponse.json({compatible:true,approved,simulated:false,callerRouter,dexRouter,adapterInputBalance:adapterInputBalance.toString(),reason:e instanceof Error ? ('shortMessage' in e && typeof e.shortMessage === 'string' ? e.shortMessage : e.message) : 'Simulation reverted',warning:'An unfunded adapter normally reverts. This is not a funded Base-fork simulation and does not establish route incompatibility.'});}
 }catch(e){return bad(e instanceof Error?e.message:'Simulation unavailable',502);}}
