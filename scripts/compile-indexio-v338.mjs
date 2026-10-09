@@ -35,6 +35,10 @@ fs.mkdirSync(path.join(root,'public'),{recursive:true});
 fs.writeFileSync(path.join(root,'public/indexio-v338-vault-artifact.json'),JSON.stringify({version:'3.3.8',network:'Base Mainnet',chainId:8453,compilerVersion:solc.version(),creationCodeHash:vaultHash,creationCodeLength:vaultLength,bytecode:A.vault.bytecode}));
 fs.mkdirSync(path.join(root,'artifacts'),{recursive:true});
 fs.writeFileSync(path.join(root,'artifacts/indexio-v338-standard-json-input.json'),JSON.stringify(input));
+fs.writeFileSync(
+  path.join(root,'lib/indexio-v338-verification.generated.ts'),
+  `// AUTO-GENERATED Indexio V3.3.8 Etherscan verification input. Do not edit.\nexport const indexioV338StandardJsonInput=${JSON.stringify(JSON.stringify(input))} as const;\n`,
+);
 let failed=false;
 for(const [k] of targets){console.log(`${k}: ${A[k].creationBytes} creation; ${A[k].runtimeBytes} runtime`);if(A[k].runtimeBytes>24_576){console.error(`${k} exceeds EIP-170 runtime limit`);failed=true;}}
 if(vaultLength>49_152){console.error(`Vault init code exceeds EIP-3860 limit: ${vaultLength}`);failed=true;}
