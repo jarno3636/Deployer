@@ -3,12 +3,12 @@
   "version": "1.1.0",
   "private": true,
   "scripts": {
-    "predev": "npm run compile:indexio-v3",
+    "predev": "npm run compile:indexio-v338",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "check:artifacts": "node scripts/check-artifacts.mjs",
-    "prebuild": "npm run check:indexio-v334 && npm run compile:scanarc && npm run compile:indexio && npm run compile:indexio-v25 && npm run compile:indexio-v3",
+    "prebuild": "npm run check:indexio-v334 && npm run compile:scanarc && npm run compile:indexio && npm run compile:indexio-v25 && npm run compile:indexio-v3 && npm run compile:indexio-v338",
     "compile:scanarc": "node scripts/compile-scanarc-router.mjs",
     "compile:bridge": "node scripts/compile-scanarc-bridge.mjs",
     "compile:indexio": "node scripts/compile-indexio.mjs && node scripts/compile-indexio-adapter.mjs",
@@ -18,6 +18,7 @@
     "release:indexio-v25": "npm run check:indexio-v25 && npm run compile:indexio-v25 && npm run build",
     "test:indexio-v25": "forge test --match-path test/IndexioV25Regression.t.sol -vv",
     "compile:indexio-v3": "node scripts/compile-indexio-v3.mjs",
+    "compile:indexio-v338": "node scripts/compile-indexio-v338.mjs",
     "check:indexio-v31": "node scripts/check-indexio-v31-security.mjs",
     "release:indexio-v31": "npm run check:indexio-v31 && npm run compile:indexio-v3 && npm run build",
     "check:indexio-v334": "node scripts/check-indexio-v334-security.mjs"
