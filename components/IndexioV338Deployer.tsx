@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useAccount, useConnect, usePublicClient, useSwitchChain, useWalletClient } from 'wagmi';
 import { base } from 'viem/chains';
-import { decodeEventLog, getAddress, isAddress, parseAbi, type Address, type Hex } from 'viem';
+import { decodeEventLog, encodeAbiParameters, getAddress, isAddress, keccak256, parseAbi, stringToHex, type Address, type Hex } from 'viem';
 import {
   indexioV338SafetyControllerAbi,indexioV338SafetyControllerBytecode,
   indexioV338TransferPolicyAbi,indexioV338TransferPolicyBytecode,
@@ -21,10 +21,13 @@ const USDC=getAddress('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
 const EXPLORER='https://basescan.org';
 const KEY='indexio-v338-base-suite';
 const MAX_CHUNK_BYTES=23_500;
+const RELEASE_ID=keccak256(stringToHex('INDEXIO_V3_3_6_HARDENED_RC'));
 const FACTORY_READ=parseAbi(['function validateComposition(address[] assets,uint16[] weights)','function isVault(address) view returns (bool)']);
 const DEPLOY_EVENT_ABI=[{type:'event',name:'VaultDeployed',anonymous:false,inputs:[{indexed:true,name:'factory',type:'address'},{indexed:true,name:'creator',type:'address'},{indexed:true,name:'vault',type:'address'},{indexed:false,name:'shareToken',type:'address'},{indexed:false,name:'incomeHub',type:'address'},{indexed:false,name:'governor',type:'address'},{indexed:false,name:'distributionBps',type:'uint16'},{indexed:false,name:'initialSharePriceUsd18',type:'uint256'}]}] as const;
-type Suite={owner:string;treasury:string;addresses:Record<string,Address>;bindings:Record<string,boolean>};
-const emptySuite:Suite={owner:'',treasury:'',addresses:{},bindings:{}};
+type VerifyState='idle'|'pending'|'verified'|'error';
+type Suite={owner:string;treasury:string;addresses:Record<string,Address>;bindings:Record<string,boolean>;verification:Record<string,VerifyState>;verificationGuids:Record<string,string>;transactions:Record<string,Hex>;deploymentBlocks:Record<string,string>};
+type VerifyTarget={key:string;label:string;kind:string;address?:Address;constructorArguments:Hex};
+const emptySuite:Suite={owner:'',treasury:'',addresses:{},bindings:{},verification:{},verificationGuids:{},transactions:{},deploymentBlocks:{}};
 const short=(x:string)=>x?`${x.slice(0,7)}…${x.slice(-5)}`:'Not set';
 
 export function IndexioV338Deployer(){
@@ -46,26 +49,98 @@ export function IndexioV338Deployer(){
  const [reward,setReward]=useState('0');
  const [distribution,setDistribution]=useState('0');
  const [vault,setVault]=useState('');
+ const [vaultConstructorArguments,setVaultConstructorArguments]=useState<Hex>('0x');
+ const [vaultVerification,setVaultVerification]=useState<VerifyState>('idle');
 
- useEffect(()=>{try{const raw=localStorage.getItem(KEY);if(raw){const saved=JSON.parse(raw);setSuite({...emptySuite,...saved,addresses:saved.addresses||{},bindings:saved.bindings||{}})}}catch{}finally{setReady(true)}},[]);
+ useEffect(()=>{try{const raw=localStorage.getItem(KEY);if(raw){const saved=JSON.parse(raw);setSuite({...emptySuite,...saved,addresses:saved.addresses||{},bindings:saved.bindings||{},verification:saved.verification||{},verificationGuids:saved.verificationGuids||{},transactions:saved.transactions||{},deploymentBlocks:saved.deploymentBlocks||{}})}}catch{}finally{setReady(true)}},[]);
  useEffect(()=>{if(ready){try{localStorage.setItem(KEY,JSON.stringify(suite))}catch{}}},[ready,suite]);
  useEffect(()=>{if(address){setSuite(s=>({...s,owner:s.owner||address,treasury:s.treasury||address}))}},[address]);
  const owner=useMemo(()=>isAddress(suite.owner)?getAddress(suite.owner):null,[suite.owner]);
  const treasury=useMemo(()=>isAddress(suite.treasury)?getAddress(suite.treasury):null,[suite.treasury]);
  const codeParts=useMemo(()=>{const h=indexioV338VaultBytecode.slice(2);const bytes=h.length/2;const splitAt=Math.ceil(bytes/2)*2;return [`0x${h.slice(0,splitAt)}`,`0x${h.slice(splitAt)}`] as Hex[]},[]);
  const baseReady=isConnected&&chainId===base.id&&!!wc&&!!pc;
+ const blobLengths=useMemo(()=>codeParts.map(part=>(part.length-2)/2),[codeParts]);
+ const verificationTargets=useMemo<VerifyTarget[]>(()=>{
+  const a=suite.addresses;
+  const encode=(params:any,values:any)=>encodeAbiParameters(params,values);
+  const targets:VerifyTarget[]=[];
+  if(owner&&a.safety)targets.push({key:'safety',label:'Emergency Safety Controller',kind:'safetyController',address:a.safety,constructorArguments:encode([{type:'address'}],[owner])});
+  if(owner&&a.transferPolicy)targets.push({key:'transferPolicy',label:'Transfer-Tax Policy',kind:'transferPolicy',address:a.transferPolicy,constructorArguments:encode([{type:'address'}],[owner])});
+  if(a.codeBlobA)targets.push({key:'codeBlobA',label:'Vault code segment A',kind:'codeBlob',address:a.codeBlobA,constructorArguments:encode([{type:'bytes'}],[codeParts[0]])});
+  if(a.codeBlobB)targets.push({key:'codeBlobB',label:'Vault code segment B',kind:'codeBlob',address:a.codeBlobB,constructorArguments:encode([{type:'bytes'}],[codeParts[1]])});
+  if(owner&&a.vaultDeployer&&a.codeBlobA&&a.codeBlobB)targets.push({key:'vaultDeployer',label:'Compact-call Vault Deployer',kind:'vaultDeployer',address:a.vaultDeployer,constructorArguments:encode([{type:'address'},{type:'bytes32'},{type:'uint32'},{type:'address'},{type:'uint32'},{type:'address'},{type:'uint32'}],[owner,indexioV338VaultCreationCodeHash,indexioV338VaultCreationCodeLength,a.codeBlobA,blobLengths[0],a.codeBlobB,blobLengths[1]])});
+  if(owner&&treasury&&a.factory&&a.safety&&a.vaultDeployer&&a.transferPolicy)targets.push({key:'factory',label:'Indexio V3.3.8 Factory',kind:'factory',address:a.factory,constructorArguments:encode(Array(7).fill({type:'address'}),[owner,REGISTRY,USDC,treasury,a.safety,a.vaultDeployer,a.transferPolicy])});
+  if(owner&&a.executionRouter&&a.factory)targets.push({key:'executionRouter',label:'Execution Router',kind:'executionRouter',address:a.executionRouter,constructorArguments:encode([{type:'address'},{type:'address'}],[owner,a.factory])});
+  if(a.zeroXAdapter&&a.executionRouter)targets.push({key:'zeroXAdapter',label:'0x Restricted Adapter',kind:'restrictedSwapAdapter',address:a.zeroXAdapter,constructorArguments:encode([{type:'address'}],[a.executionRouter])});
+  if(owner&&a.lifiAdapter&&a.executionRouter)targets.push({key:'lifiAdapter',label:'LI.FI Restricted Adapter',kind:'lifiSwapAdapter',address:a.lifiAdapter,constructorArguments:encode([{type:'address'},{type:'address'}],[owner,a.executionRouter])});
+  return targets;
+ },[suite.addresses,owner,treasury,codeParts,blobLengths]);
+ const integrationData=useMemo(()=>({
+  release:'INDEXIO_V3_3_8_COMPACT_DEPLOYMENT',uiVersion:'3.3.8',contractRelease:'3.3.6 Hardened RC',releaseId:RELEASE_ID,
+  network:'Base Mainnet',chainId:8453,explorer:EXPLORER,
+  protocolOwner:owner||suite.owner||null,feeTreasury:treasury||suite.treasury||null,
+  assetRegistry:REGISTRY,settlementToken:USDC,
+  safetyController:suite.addresses.safety||null,transferPolicy:suite.addresses.transferPolicy||null,
+  vaultCode:{creationCodeHash:indexioV338VaultCreationCodeHash,creationCodeLength:indexioV338VaultCreationCodeLength,segmentA:suite.addresses.codeBlobA||null,segmentALength:blobLengths[0],segmentB:suite.addresses.codeBlobB||null,segmentBLength:blobLengths[1]},
+  vaultDeployer:suite.addresses.vaultDeployer||null,factory:suite.addresses.factory||null,executionRouter:suite.addresses.executionRouter||null,
+  adapters:{zeroX:suite.addresses.zeroXAdapter||null,lifi:suite.addresses.lifiAdapter||null},
+  protocol:{protocolFeeBps:100,maxCreatorFeeBps:100,maxCreatorIncomeRewardBps:2000,minGrossSeedUsdc:'25',assetWeightTotalBps:10000,maxAssetsPerIndex:20},
+  appCalls:{createVault:'deploy(string,string,address[],uint16[],uint16,uint16,uint16,uint256)',seedIndex:'seedIndex(address,uint256,(address,uint256,uint256,uint256,bytes)[],address,uint256)',factoryDiscovery:'vaultCount() / allVaults(uint256)',vaultCreatedEvent:'VaultDeployed(address,address,address,address,address,address,uint16,uint256)'},
+  wiring:{safetyFactoryLocked:Boolean(suite.bindings.safety),vaultDeployerFactoryLocked:Boolean(suite.bindings.deployer),zeroXAdapterApproved:Boolean(suite.bindings.zeroX),lifiAdapterApproved:Boolean(suite.bindings.lifi),factoryRouterLocked:Boolean(suite.bindings.factoryRouter)},
+  transactions:suite.transactions,deploymentBlocks:suite.deploymentBlocks,
+  verification:Object.fromEntries(verificationTargets.map(x=>[x.key,{status:suite.verification[x.key]||'idle',baseScan:`${EXPLORER}/address/${x.address}#code`}]))
+ }),[suite,owner,treasury,blobLengths,verificationTargets]);
+ const deploymentRecord=useMemo(()=>`INDEXIO V3.3.8 — BASE MAINNET
+Chain ID: 8453
+Asset Registry: ${REGISTRY}
+Base USDC: ${USDC}
+Protocol Owner: ${owner||suite.owner||''}
+Fee Treasury: ${treasury||suite.treasury||''}
+
+Emergency Safety Controller: ${suite.addresses.safety||''}
+Transfer-Tax Policy: ${suite.addresses.transferPolicy||''}
+Vault Code Segment A: ${suite.addresses.codeBlobA||''}
+Vault Code Segment B: ${suite.addresses.codeBlobB||''}
+Vault Creation Code Hash: ${indexioV338VaultCreationCodeHash}
+Vault Creation Code Length: ${indexioV338VaultCreationCodeLength}
+Compact-call Vault Deployer: ${suite.addresses.vaultDeployer||''}
+Factory: ${suite.addresses.factory||''}
+Factory Deployment Block: ${suite.deploymentBlocks.factory||''}
+Factory Deployment Transaction: ${suite.transactions.factory||''}
+Execution Router: ${suite.addresses.executionRouter||''}
+0x Restricted Adapter: ${suite.addresses.zeroXAdapter||''}
+LI.FI Restricted Adapter: ${suite.addresses.lifiAdapter||''}
+Router / Adapter Release ID: ${RELEASE_ID}
+
+Minimum Seed: 25 USDC
+Protocol Fee: 100 bps (1%)
+Maximum Creator Fee: 100 bps (1%)
+Factory Router Locked: ${suite.bindings.factoryRouter?'YES':'NO'}
+Safety Factory Locked: ${suite.bindings.safety?'YES':'NO'}
+Vault Deployer Factory Locked: ${suite.bindings.deployer?'YES':'NO'}
+0x Adapter Approved: ${suite.bindings.zeroX?'YES':'NO'}
+LI.FI Adapter Approved: ${suite.bindings.lifi?'YES':'NO'}
+`,[suite,owner,treasury]);
+
+ async function copyText(value:string,success:string){try{await navigator.clipboard.writeText(value);setNotice(success);setError('')}catch{setError('Clipboard access was blocked. Use a secure HTTPS page and allow clipboard access.')}}
+ async function verifyTarget(target:VerifyTarget,quiet=false){
+  setSuite(s=>({...s,verification:{...s.verification,[target.key]:'pending'}}));if(!quiet){setBusy(`verify:${target.key}`);setError('');setNotice('')}
+  try{const current=suite.verification[target.key]||'idle';const guid=suite.verificationGuids[target.key]||'';const response=await fetch('/api/etherscan/verify-indexio-v338',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({kind:target.kind,address:target.address,constructorArguments:target.constructorArguments,mode:current==='pending'&&guid?'check':'verify',guid})});const body=await response.json().catch(()=>({error:'Etherscan returned an unreadable response.'}));if(!response.ok)throw Error(body.error||'Etherscan verification failed.');const status:VerifyState=body.verified?'verified':body.pending?'pending':'idle';setSuite(s=>({...s,verification:{...s.verification,[target.key]:status},verificationGuids:{...s.verificationGuids,[target.key]:body.guid||s.verificationGuids[target.key]||''}}));if(!quiet)setNotice(body.message||`${target.label} verification updated.`);return status}catch(e:any){setSuite(s=>({...s,verification:{...s.verification,[target.key]:'error'}}));if(!quiet)setError(e?.message||String(e));return 'error' as VerifyState}finally{if(!quiet)setBusy('')}
+ }
+ async function verifyAll(){setBusy('verify-all');setError('');setNotice('Submitting contracts to Etherscan one at a time…');let failures=0;for(const target of verificationTargets){const result=await verifyTarget(target,true);if(result==='error')failures++}setBusy('');if(failures)setError(`${failures} contract verification request${failures===1?'':'s'} failed. Use the individual buttons to see and retry each one.`);else setNotice('All deployed suite contracts were submitted or confirmed on Etherscan/BaseScan.')}
+ async function verifyCreatedVault(){if(!vault||vaultConstructorArguments==='0x')return setError('The vault verification data is not available in this session.');setBusy('verify:vault');setVaultVerification('pending');setError('');try{const response=await fetch('/api/etherscan/verify-indexio-v338',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({kind:'vault',address:vault,constructorArguments:vaultConstructorArguments})});const body=await response.json().catch(()=>({error:'Etherscan returned an unreadable response.'}));if(!response.ok)throw Error(body.error||'Vault verification failed.');setVaultVerification(body.verified?'verified':'pending');setNotice(body.message||'Vault verification submitted.')}catch(e:any){setVaultVerification('error');setError(e?.message||String(e))}finally{setBusy('')}}
 
  async function ensureBase(){if(!isConnected){if(!connectors[0])throw Error('No injected wallet found. Install or open MetaMask, then reconnect.');await connectAsync({connector:connectors[0]});return false;}if(chainId!==base.id){await switchChainAsync({chainId:base.id});return false;}if(!wc||!pc)throw Error('Wallet connection is still initializing. Try again.');return true;}
  async function deployContract(key:string,label:string,abi:any,bytecode:Hex,args:any[]):Promise<Address|null>{
    if(!await ensureBase())return null;
    if(!owner)throw Error('Enter a valid protocol owner address first.');
    setBusy(key);setError('');setNotice('');
-   try{const hash=await (wc!.deployContract as any)({abi,bytecode,args,account:wc!.account});const receipt=await pc!.waitForTransactionReceipt({hash});if(receipt.status!=='success'||!receipt.contractAddress)throw Error(`${label} deployment reverted.`);const deployed=getAddress(receipt.contractAddress);setSuite(s=>({...s,addresses:{...s.addresses,[key]:deployed}}));setNotice(`${label} deployed and confirmed on Base.`);return deployed}catch(e:any){setError(e?.shortMessage||e?.message||String(e));return null}finally{setBusy('')}
+   try{const hash=await (wc!.deployContract as any)({abi,bytecode,args,account:wc!.account});const receipt=await pc!.waitForTransactionReceipt({hash});if(receipt.status!=='success'||!receipt.contractAddress)throw Error(`${label} deployment reverted.`);const deployed=getAddress(receipt.contractAddress);setSuite(s=>({...s,addresses:{...s.addresses,[key]:deployed},transactions:{...s.transactions,[key]:hash},deploymentBlocks:{...s.deploymentBlocks,[key]:receipt.blockNumber.toString()}}));setNotice(`${label} deployed and confirmed on Base.`);return deployed}catch(e:any){setError(e?.shortMessage||e?.message||String(e));return null}finally{setBusy('')}
  }
  async function write(key:string,label:string,to:Address,abi:any,functionName:string,args:any[]){
    if(!await ensureBase())return;
    setBusy(key);setError('');setNotice('');
-   try{const hash=await (wc!.writeContract as any)({address:to,abi,functionName,args,account:wc!.account});const receipt=await pc!.waitForTransactionReceipt({hash});if(receipt.status!=='success')throw Error(`${label} transaction reverted.`);setSuite(s=>({...s,bindings:{...s.bindings,[key]:true}}));setNotice(`${label} confirmed on Base.`)}catch(e:any){setError(e?.shortMessage||e?.message||String(e))}finally{setBusy('')}
+   try{const hash=await (wc!.writeContract as any)({address:to,abi,functionName,args,account:wc!.account});const receipt=await pc!.waitForTransactionReceipt({hash});if(receipt.status!=='success')throw Error(`${label} transaction reverted.`);setSuite(s=>({...s,bindings:{...s.bindings,[key]:true},transactions:{...s.transactions,[key]:hash},deploymentBlocks:{...s.deploymentBlocks,[key]:receipt.blockNumber.toString()}}));setNotice(`${label} confirmed on Base.`)}catch(e:any){setError(e?.shortMessage||e?.message||String(e))}finally{setBusy('')}
  }
  async function deployCodeBlob(index:number){
    if(!await ensureBase())return;
@@ -97,7 +172,7 @@ export function IndexioV338Deployer(){
      setNotice('Vault submitted. Waiting for Base confirmation…');const receipt=await pc!.waitForTransactionReceipt({hash});if(receipt.status!=='success')throw Error('Vault creation transaction reverted.');
      let found='';for(const log of receipt.logs){try{const event=decodeEventLog({abi:DEPLOY_EVENT_ABI,data:log.data,topics:log.topics});if(event.eventName==='VaultDeployed'){found=String(event.args.vault);break}}catch{}}
      if(!found)throw Error('Transaction confirmed, but the VaultDeployed event could not be decoded. Check the transaction on BaseScan before retrying.');
-     const deployed=getAddress(found);setVault(deployed);setTab('create');setNotice('Index created. Continue to the 25 USDC seed step.');
+     const deployed=getAddress(found);const creator=getAddress(wc!.account.address);const vaultCtor=encodeAbiParameters([{type:'address'},{type:'address'},{type:'string'},{type:'string'},{type:'address[]'},{type:'uint16[]'},{type:'uint16'},{type:'uint16'},{type:'uint16'},{type:'uint256'}],[suite.addresses.factory,creator,name.trim(),symbol.trim(),assets,weights,cfee,rew,dist,1000000000000000000n]);setVaultConstructorArguments(vaultCtor);setVaultVerification('idle');setVault(deployed);setTab('create');setNotice('Index created. Continue to the 25 USDC seed step.');
    }catch(e:any){setError(e?.shortMessage||e?.message||String(e))}finally{setBusy('')}
  }
  function addAsset(){setAssetRows(r=>[...r,{asset:'',weight:''}])}
@@ -129,8 +204,16 @@ export function IndexioV338Deployer(){
     <label className="field">Protocol owner<input value={suite.owner} onChange={e=>setSuite(s=>({...s,owner:e.target.value}))} placeholder="0x…"/></label><label className="field">Fee treasury<input value={suite.treasury} onChange={e=>setSuite(s=>({...s,treasury:e.target.value}))} placeholder="0x…"/></label><div className="notice">USDC is fixed to Base USDC. Registry is fixed to the existing Indexio Asset Registry. Verify both addresses before deploying.</div>
    </section>
    {rows.map(([key,label,action,done],i)=>{const blocked=(i>0&&!rows.slice(0,i).every(r=>r[3] as boolean))||!owner||!treasury;const isBlob=key==='code';return <section className="card" key={String(key)}><div className="stepHead"><div className="stepNo">{String(i+1).padStart(2,'0')}</div><div><h2>{label as string}</h2><p>{done?'Confirmed and recorded on this device.':isBlob?`Two small one-time storage deployments; each segment is at most ${MAX_CHUNK_BYTES.toLocaleString()} bytes.`:'Continue one confirmed Base transaction at a time.'}</p></div></div>{key==='factory'&&<div className="candidate">Factory uses the new Vault Deployer and the existing Asset Registry. It must be new because the current factory permanently points to the V3.3.7 deployer.</div>}{key==='code'&&<div className="details"><div><span>Segment A</span><code>{suite.addresses.codeBlobA||'Not deployed'}</code></div><div><span>Segment B</span><code>{suite.addresses.codeBlobB||'Not deployed'}</code></div></div>}{done&&suite.addresses[String(key)]&&<a className="linkButton" href={url(suite.addresses[String(key)])} target="_blank" rel="noreferrer">View on BaseScan ↗</a>}{!done&&<button className="primary deploy" disabled={blocked||!!busy||!baseReady} onClick={()=>{setError('');(action as ()=>Promise<void>)().catch((e:any)=>setError(e?.message||String(e)))}}>{busy===key?`Waiting for ${label as string}…`:busy?'Another transaction is pending':`Continue: ${label as string}`}</button>}</section>})}
+   <section className="card"><div className="stepHead"><div className="stepNo">VERIFY</div><div><h2>Etherscan verification</h2><p>Uses the server-side Etherscan V2 route. Add <code>ETHERSCAN_API_KEY</code> in Vercel, redeploy once, then verify these same deployed addresses.</p></div></div>
+    {verificationTargets.length===0?<div className="notice">Deployed contracts will appear here automatically.</div>:verificationTargets.map(target=>{const status=suite.verification[target.key]||'idle';return <div className="deploymentRecordRow" key={target.key}><div><span>{target.label.toUpperCase()}</span><strong>{target.address}</strong><small className={status==='verified'?'good':status==='error'?'bad':''}>{status==='verified'?'Verified on BaseScan ✓':status==='pending'?'Verification processing…':status==='error'?'Verification needs retry':'Not verified yet'}</small></div><button className="ghost compact" disabled={!!busy} onClick={()=>verifyTarget(target)}>{busy===`verify:${target.key}`?'Checking…':status==='verified'?'Check again':status==='pending'?'Check status':'Verify source'}</button></div>})}
+    <button className="secondary" style={{marginTop:12}} disabled={!!busy||verificationTargets.length===0} onClick={verifyAll}>{busy==='verify-all'?'Verifying contracts…':'Verify all deployed contracts'}</button>
+   </section>
+   <section className="card"><div className="stepHead"><div className="stepNo">COPY</div><div><h2>Indexio app integration record</h2><p>Copy the readable deployment record for your notes or the JSON configuration for wiring this release into Indexio later.</p></div></div>
+    <div className="details"><div><span>Factory</span><code>{suite.addresses.factory||'Not deployed'}</code></div><div><span>Vault deployer</span><code>{suite.addresses.vaultDeployer||'Not deployed'}</code></div><div><span>Execution router</span><code>{suite.addresses.executionRouter||'Not deployed'}</code></div><div><span>Vault code hash</span><code>{indexioV338VaultCreationCodeHash}</code></div></div>
+    <button className="primary" style={{marginTop:12}} onClick={()=>copyText(deploymentRecord,'Complete deployment record copied.')}>Copy deployment record</button><button className="ghost" style={{marginTop:10}} onClick={()=>copyText(JSON.stringify(integrationData,null,2),'Indexio app integration JSON copied.')}>Copy app integration JSON</button>
+   </section>
   </>:<>
-   {vault?<section className="card"><div className="stepHead"><div className="stepNo">DONE</div><div><h2>Your index is ready to seed</h2><p>The vault is confirmed on Base. The required seed is at least 25 USDC.</p></div></div><div className="contractBox"><span>VAULT ADDRESS</span><strong>{vault}</strong></div><a className="linkButton" href={`${EXPLORER}/address/${vault}`} target="_blank" rel="noreferrer">View vault on BaseScan ↗</a><a className="primary linkButton" href={`https://www.indexio.world/indexes/onchain/${vault}`} target="_blank" rel="noreferrer">Continue to 25 USDC seed ↗</a><button className="ghost" style={{marginTop:10}} onClick={()=>setVault('')}>Create another index</button></section>:<section className="card"><div className="stepHead"><div className="stepNo">NEW</div><div><h2>Create an index</h2><p>Configuration is checked against the on-chain Asset Registry before MetaMask is asked to confirm the compact deployer call.</p></div></div>
+   {vault?<section className="card"><div className="stepHead"><div className="stepNo">DONE</div><div><h2>Your index is ready to seed</h2><p>The vault is confirmed on Base. The required seed is at least 25 USDC.</p></div></div><div className="contractBox"><span>VAULT ADDRESS</span><strong>{vault}</strong></div><a className="linkButton" href={`${EXPLORER}/address/${vault}`} target="_blank" rel="noreferrer">View vault on BaseScan ↗</a><button className="ghost" style={{marginTop:10}} disabled={!!busy||vaultVerification==='verified'} onClick={verifyCreatedVault}>{busy==='verify:vault'?'Verifying vault…':vaultVerification==='verified'?'Vault source verified ✓':'Verify vault source on BaseScan'}</button><a className="primary linkButton" href={`https://www.indexio.world/indexes/onchain/${vault}`} target="_blank" rel="noreferrer">Continue to 25 USDC seed ↗</a><button className="ghost" style={{marginTop:10}} onClick={()=>setVault('')}>Create another index</button></section>:<section className="card"><div className="stepHead"><div className="stepNo">NEW</div><div><h2>Create an index</h2><p>Configuration is checked against the on-chain Asset Registry before MetaMask is asked to confirm the compact deployer call.</p></div></div>
     <label className="field">Index name<input value={name} onChange={e=>setName(e.target.value)} placeholder="e.g. Base Dividend Leaders"/></label><label className="field">Share symbol<input value={symbol} onChange={e=>setSymbol(e.target.value.toUpperCase())} placeholder="e.g. BDL" maxLength={12}/></label>
     {assetRows.map((x,i)=><div className="assetRow" key={i}><label className="field">Asset {i+1} contract<input value={x.asset} onChange={e=>updateRow(i,'asset',e.target.value)} placeholder="Base token address"/></label><label className="field">Weight (bps)<input value={x.weight} onChange={e=>updateRow(i,'weight',e.target.value)} inputMode="numeric" placeholder="e.g. 2500"/></label>{assetRows.length>1&&<button className="ghost compact remove" onClick={()=>setAssetRows(r=>r.filter((_,j)=>j!==i))}>Remove</button>}</div>)}
     {assetRows.length<20&&<button className="ghost" style={{marginTop:10}} onClick={addAsset}>Add another asset</button>}
