@@ -7,3 +7,5 @@
 .deployerShell input,.deployerShell textarea,.deployerShell select{box-sizing:border-box;max-width:100%;min-width:0;width:100%}
 .deployerShell .contractBox,.deployerShell pre,.deployerShell code{max-width:100%;overflow-wrap:anywhere;word-break:break-word}
 .deployerShell .stepHead h2,.deployerShell .stepHead p{overflow-wrap:anywhere}
+
+.tabs{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:0 0 12px}.tabs button{background:#101b28;color:#8798ac;border:1px solid var(--line)}.tabs button.selected{background:linear-gradient(180deg,#93f2ff,#49d7ee);color:#03131a;border-color:transparent}.assetRow{display:grid;grid-template-columns:minmax(0,1fr) 140px auto;align-items:end;gap:8px;margin-top:8px}.assetRow .field{min-width:0}.assetRow .remove{margin-bottom:0}.formGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}@media(max-width:540px){.assetRow{grid-template-columns:minmax(0,1fr) 112px}.assetRow .remove{grid-column:1/-1}.formGrid{grid-template-columns:1fr}}

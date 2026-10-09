@@ -3,8 +3,8 @@ import './globals.css';
 import { Providers } from './providers';
 
 export const metadata: Metadata = {
-  title: 'Indexio V2.5 Base Deployment Center',
-  description: 'Sequential Base mainnet deployment, verification, bootstrap, and finalization console for Indexio V2.5.',
+  title: 'Indexio V3.3.8 Contract Suite',
+  description: 'Indexio Base deployment center with compact on-chain vault bytecode storage and index creation.',
 };
 
 export const viewport: Viewport = {
