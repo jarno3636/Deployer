@@ -1,1 +1,53 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { isAddress } from 'viem';
+import { indexioV338StandardJsonInput } from '../../../../lib/indexio-v338-verification.generated';
 
+export const runtime = 'nodejs';
+
+const ETHERSCAN_V2 = 'https://api.etherscan.io/v2/api';
+const BASE_CHAIN_ID = '8453';
+const BASE_RPC = process.env.BASE_RPC_URL || process.env.NEXT_PUBLIC_BASE_RPC_URL || 'https://mainnet.base.org';
+const COMPILER = 'v0.8.30+commit.73712a01';
+const CONTRACTS = {
+  safetyController: { fq: 'contracts/indexio-v3/IndexioSafetyControllerV3.sol:IndexioSafetyControllerV3' },
+  transferPolicy: { fq: 'contracts/indexio-v3/IndexioTransferPolicyV3.sol:IndexioTransferPolicyV3' },
+  codeBlob: { fq: 'contracts/indexio-v3/IndexioVaultCodeBlobV338.sol:IndexioVaultCodeBlobV338' },
+  vaultDeployer: { fq: 'contracts/indexio-v3/IndexioVaultDeployerV338.sol:IndexioVaultDeployerV338' },
+  factory: { fq: 'contracts/indexio-v3/IndexioFactoryV338.sol:IndexioFactoryV338' },
+  executionRouter: { fq: 'contracts/indexio-v3/IndexioExecutionRouterV3.sol:IndexioExecutionRouterV3' },
+  restrictedSwapAdapter: { fq: 'contracts/indexio-v3/IndexioRestrictedSwapAdapterV3.sol:IndexioRestrictedSwapAdapterV3' },
+  lifiSwapAdapter: { fq: 'contracts/indexio-v3/IndexioLifiSwapAdapterV3.sol:IndexioLifiSwapAdapterV3' },
+  vault: { fq: 'contracts/indexio-v3/IndexioVaultV3.sol:IndexioVaultV3' },
+} as const;
+type ContractKind = keyof typeof CONTRACTS;
+
+async function readJson(res: Response) { const text=await res.text(); try{return JSON.parse(text);}catch{return {message:text||res.statusText,__nonJson:true};} }
+function clean(value:unknown,fallback:string){const s=String(value||'').trim();if(!s||/<(?:!doctype|html|head|body)/i.test(s))return fallback;return s.length>500?`${s.slice(0,500)}…`:s;}
+function apiKey(){return process.env.ETHERSCAN_API_KEY||'';}
+async function hasCodeOnBase(address:string){try{const r=await fetch(BASE_RPC,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({jsonrpc:'2.0',id:1,method:'eth_getCode',params:[address,'latest']}),cache:'no-store'});const j=await readJson(r);const code=String(j?.result||'');return r.ok&&/^0x[0-9a-fA-F]+$/.test(code)&&code!=='0x'&&code!=='0x0';}catch{return false;}}
+async function etherscan(params:Record<string,string>){const url=new URL(ETHERSCAN_V2);url.searchParams.set('chainid',BASE_CHAIN_ID);url.searchParams.set('apikey',apiKey());const r=await fetch(url.toString(),{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',accept:'application/json'},body:new URLSearchParams(params).toString(),cache:'no-store'});return {res:r,body:await readJson(r)};}
+async function alreadyVerified(address:string){const {res,body}=await etherscan({module:'contract',action:'getsourcecode',address});if(!res.ok||body?.__nonJson||String(body?.status)!=='1')return false;const item=Array.isArray(body?.result)?body.result[0]:null;return Boolean(item&&String(item.SourceCode||'').trim());}
+async function checkGuid(guid:string){const {res,body}=await etherscan({module:'contract',action:'checkverifystatus',guid});const result=clean(body?.result||body?.message,'Etherscan verification status is temporarily unavailable.');return {ok:res.ok&&!body?.__nonJson,verified:/pass|verified/i.test(result)&&!/pending/i.test(result),pending:/pending|queue|in progress/i.test(result),message:result};}
+
+export async function POST(req:NextRequest){
+ try{
+  const {kind,address,constructorArguments='',mode='verify',guid=''}=await req.json();
+  if(!(kind in CONTRACTS)||!isAddress(address))return NextResponse.json({error:'Valid V3.3.8 contract kind and Base address are required.'},{status:400});
+  if(!apiKey())return NextResponse.json({error:'ETHERSCAN_API_KEY is not configured in Vercel. Add it as a server environment variable, redeploy, then retry this same contract address.'},{status:503});
+  if(!await hasCodeOnBase(address))return NextResponse.json({error:'No contract bytecode is visible at this address on Base. Confirm the recorded address before continuing.',deployed:false},{status:409});
+  if(await alreadyVerified(address))return NextResponse.json({ok:true,deployed:true,verified:true,message:'Source verified on Etherscan/BaseScan.'});
+  if(mode==='check'){
+   if(guid){const s=await checkGuid(String(guid));return NextResponse.json({ok:true,deployed:true,verified:s.verified,pending:s.pending,guid,message:s.message});}
+   return NextResponse.json({ok:true,deployed:true,verified:false,pending:false,message:'Contract is deployed on Base but is not source-verified yet.'});
+  }
+  const contract=CONTRACTS[kind as ContractKind];
+  const {res,body}=await etherscan({module:'contract',action:'verifysourcecode',contractaddress:address,sourceCode:indexioV338StandardJsonInput,codeformat:'solidity-standard-json-input',contractname:contract.fq,compilerversion:COMPILER,constructorArguments:String(constructorArguments).replace(/^0x/,'')});
+  const result=clean(body?.result||body?.message,'Etherscan returned an unreadable verification response.');
+  if(/already verified/i.test(result))return NextResponse.json({ok:true,deployed:true,verified:true,message:'Source already verified on Etherscan/BaseScan.'});
+  if(!res.ok||body?.__nonJson||String(body?.status)!=='1')return NextResponse.json({error:`Contract is deployed, but Etherscan rejected source verification: ${result}`,deployed:true},{status:422});
+  const newGuid=String(body.result||'').trim();
+  if(!newGuid)return NextResponse.json({error:'Etherscan accepted the request but returned no verification GUID.',deployed:true},{status:422});
+  for(let i=0;i<5;i++){await new Promise(r=>setTimeout(r,1200));const s=await checkGuid(newGuid);if(s.verified)return NextResponse.json({ok:true,deployed:true,verified:true,guid:newGuid,message:'Source verified on Etherscan/BaseScan.'});if(!s.pending&&/fail|unable|error/i.test(s.message))return NextResponse.json({error:`Etherscan verification failed: ${s.message}`,deployed:true,guid:newGuid},{status:422});}
+  return NextResponse.json({ok:true,deployed:true,verified:false,pending:true,guid:newGuid,message:'Verification submitted and still processing. Check status again shortly; do not redeploy.'});
+ }catch(e){return NextResponse.json({error:clean(e instanceof Error?e.message:'','Etherscan verification failed. Retry this same deployed address.')},{status:500});}
+}
