@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { isAddress } from 'viem';
 import { indexioV338StandardJsonInput } from '../../../../lib/indexio-v338-verification.generated';
+import { adaptiveBuyStandardJsonInput } from '../../../../lib/indexio-adaptive-buy-verification.generated';
 
 export const runtime = 'nodejs';
 
@@ -18,6 +19,9 @@ const CONTRACTS = {
   restrictedSwapAdapter: { fq: 'contracts/indexio-v3/IndexioRestrictedSwapAdapterV3.sol:IndexioRestrictedSwapAdapterV3' },
   lifiSwapAdapter: { fq: 'contracts/indexio-v3/IndexioLifiSwapAdapterV3.sol:IndexioLifiSwapAdapterV3' },
   vault: { fq: 'contracts/indexio-v3/IndexioVaultV3.sol:IndexioVaultV3' },
+  adaptiveBuyRouter: { fq: 'contracts/indexio-v3/IndexioProportionalBuyRouterV338.sol:IndexioProportionalBuyRouterV338' },
+  adaptiveBuyZeroX: { fq: 'contracts/indexio-v3/IndexioRestrictedSwapAdapterV3.sol:IndexioRestrictedSwapAdapterV3' },
+  adaptiveBuyLifi: { fq: 'contracts/indexio-v3/IndexioLifiSwapAdapterV3.sol:IndexioLifiSwapAdapterV3' },
 } as const;
 type ContractKind = keyof typeof CONTRACTS;
 
@@ -41,7 +45,7 @@ export async function POST(req:NextRequest){
    return NextResponse.json({ok:true,deployed:true,verified:false,pending:false,message:'Contract is deployed on Base but is not source-verified yet.'});
   }
   const contract=CONTRACTS[kind as ContractKind];
-  const {res,body}=await etherscan({module:'contract',action:'verifysourcecode',contractaddress:address,sourceCode:indexioV338StandardJsonInput,codeformat:'solidity-standard-json-input',contractname:contract.fq,compilerversion:COMPILER,constructorArguments:String(constructorArguments).replace(/^0x/,'')});
+  const {res,body}=await etherscan({module:'contract',action:'verifysourcecode',contractaddress:address,sourceCode:String(kind).startsWith('adaptiveBuy')?adaptiveBuyStandardJsonInput:indexioV338StandardJsonInput,codeformat:'solidity-standard-json-input',contractname:contract.fq,compilerversion:COMPILER,constructorArguments:String(constructorArguments).replace(/^0x/,'')});
   const result=clean(body?.result||body?.message,'Etherscan returned an unreadable verification response.');
   if(/already verified/i.test(result))return NextResponse.json({ok:true,deployed:true,verified:true,message:'Source already verified on Etherscan/BaseScan.'});
   if(!res.ok||body?.__nonJson||String(body?.status)!=='1')return NextResponse.json({error:`Contract is deployed, but Etherscan rejected source verification: ${result}`,deployed:true},{status:422});
