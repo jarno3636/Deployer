@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
+import Link from 'next/link';
 import { useAccount, useConnect, usePublicClient, useSwitchChain, useWalletClient } from 'wagmi';
 import { base } from 'viem/chains';
 import { createWalletClient, custom, decodeEventLog, encodeAbiParameters, getAddress, isAddress, keccak256, parseAbi, stringToHex, type Address, type Hex } from 'viem';
@@ -229,6 +230,7 @@ LI.FI Adapter Approved: ${suite.bindings.lifi?'YES':'NO'}
   <header className="hero"><div className="brandRow"><div className="mark">I</div><div><div className="eyebrow">INDEXIO · BASE MAINNET · V3.3.8</div><div className="networkPill"><i/>Compact vault creation</div></div></div><h1>Indexio contract suite</h1><p>Reuse the existing Asset Registry. Store the verified vault creation code once, then create every index with a small MetaMask request.</p></header>
   <section className="walletBox"><div><span>WALLET</span><b>{isConnected?short(address||''): 'Not connected'} · {chainId===base.id?'Base':'Switch to Base'}</b></div><button className="ghost compact" onClick={async()=>{try{if(!isConnected&&connectors[0])await connectAsync({connector:connectors[0]});else if(chainId!==base.id)await switchChainAsync({chainId:base.id})}catch(e:any){setError(e?.shortMessage||e?.message||String(e))}}}>{isConnected?(chainId===base.id?'Connected':'Switch network'):'Connect MetaMask'}</button></section>
   <div className="statusGrid"><article><span>ASSET REGISTRY</span><b>Reused</b><small>{short(REGISTRY)}</small></article><article><span>VAULT CODE</span><b>{indexioV338VaultCreationCodeLength.toLocaleString()} bytes</b><small>Stored across {codeParts.length} immutable segments</small></article></div>
+  <section className="card"><div className="stepHead"><div className="stepNo">+</div><div><h2>Adaptive Buy add-on</h2><p>Optional separate buy-only router for adding shares to existing V3.3.8 vaults. Leaves initial seed, Factory, and selling untouched.</p></div></div><Link href="/indexio/v3/adaptive-buy" className="linkButton">Open Adaptive Buy deployment →</Link></section>
   <nav className="tabs"><button className={tab==='suite'?'selected':'ghost'} onClick={()=>setTab('suite')}>Contract suite</button><button className={tab==='create'?'selected':'ghost'} onClick={()=>setTab('create')}>Create index</button></nav>
   {tab==='suite'?<>
    <section className="card"><div className="stepHead"><div className="stepNo">SETUP</div><div><h2>Deployment record</h2><p>Saved on this device as you go. Each deployment and wiring action is a separate wallet confirmation, so you can resume after a refresh.</p></div></div>
