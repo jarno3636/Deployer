@@ -9,3 +9,12 @@
 .deployerShell .stepHead h2,.deployerShell .stepHead p{overflow-wrap:anywhere}
 
 .tabs{display:grid;grid-template-columns:1fr 1fr;gap:9px;margin:0 0 12px}.tabs button{background:#101b28;color:#8798ac;border:1px solid var(--line)}.tabs button.selected{background:linear-gradient(180deg,#93f2ff,#49d7ee);color:#03131a;border-color:transparent}.assetRow{display:grid;grid-template-columns:minmax(0,1fr) 140px auto;align-items:end;gap:8px;margin-top:8px}.assetRow .field{min-width:0}.assetRow .remove{margin-bottom:0}.formGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}@media(max-width:540px){.assetRow{grid-template-columns:minmax(0,1fr) 112px}.assetRow .remove{grid-column:1/-1}.formGrid{grid-template-columns:1fr}}
+
+/* Adaptive Buy add-on — focused styling, no global overrides */
+.adaptive-buy-admin .adaptive-deployment-record{padding:14px;margin:12px 0;border-radius:12px;border:1px solid var(--line);background:#070e18;color:#b9c9d8;font:12px/1.65 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}
+.adaptive-buy-admin .deploymentRecordRow{min-width:0}
+.adaptive-buy-admin .deploymentRecordRow .secondary.compact{width:auto;padding:10px 13px;font-size:12px}
+.adaptive-buy-admin a{color:#86e9f9}
+.adaptive-buy-admin .check{align-items:flex-start}
+.adaptive-buy-admin .statusGrid article small{line-height:1.5}
+@media(max-width:540px){.adaptive-buy-admin .deploymentRecordRow .secondary.compact{width:100%}.adaptive-buy-admin .statusGrid{grid-template-columns:1fr 1fr}.adaptive-buy-admin .walletBox{flex-wrap:wrap}.adaptive-buy-admin .walletBox button{width:100%}}
