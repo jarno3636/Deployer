@@ -84,6 +84,10 @@ export function IndexioAdaptiveBuyDeployer(){
   const [spender,setSpender]=useState('');
   const [selector,setSelector]=useState('');
   const [lifiStatus,setLifiStatus]=useState('');
+  const [discoverAsset,setDiscoverAsset]=useState('0xb20000000000000000000078ee7ce2fe4908108c');
+  const [discoverBusy,setDiscoverBusy]=useState(false);
+  const [discoveredRoute,setDiscoveredRoute]=useState<{asset:string;target:string;spender:string;selector:string;tool:string;source:string;warning:string}|null>(null);
+
 
   const [acknowledge,setAcknowledge]=useState(false);
   const [testVault,setTestVault]=useState('');
@@ -219,6 +223,29 @@ export function IndexioAdaptiveBuyDeployer(){
   const propose=(a:Address)=>write(`propose:${short(a)}`,adaptiveBuyRouterAbi,addressOf('router')!,'proposeAdapter',[a]);
   const activate=(a:Address)=>write(`activate:${short(a)}`,adaptiveBuyRouterAbi,addressOf('router')!,'activateAdapter',[a]);
   const disable=(a:Address)=>write(`disable:${short(a)}`,adaptiveBuyRouterAbi,addressOf('router')!,'disableAdapter',[a]);
+  async function discoverLifiPermission(){
+    if(!status.lifiOk||!status.lifiApproved||!status.routerOk||!saved.lifi||!saved.router){
+      setError('Verify the deployed Adaptive Buy Router and activated LI.FI adapter before looking up permissions.');return;
+    }
+    if(!isAddress(discoverAsset)){setError('Enter an exact Base ERC-20 or B20 stock contract address.');return;}
+    setDiscoverBusy(true);setError('');setLifiStatus('Looking up a read-only LI.FI route for this asset…');setDiscoveredRoute(null);setTarget('');setSpender('');setSelector('');
+    try{
+      const response=await fetch('/api/indexio/v3/adaptive-lifi-permissions',{
+        method:'POST',headers:{'content-type':'application/json'},cache:'no-store',
+        body:JSON.stringify({asset:getAddress(discoverAsset)}),
+      });
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok)throw Error(String(data?.error||'No trusted LI.FI route was found.'));
+      if(!isAddress(data.target)||!isAddress(data.spender)||!/^0x[0-9a-fA-F]{8}$/.test(String(data.selector))||
+        !same(data.fromAddress,saved.lifi)||!same(data.toAddress,saved.router)||data.chainId!==8453){
+        throw Error('The route was not bound to your deployed adapter and router. Nothing was prefilled.');
+      }
+      setTarget(getAddress(data.target));setSpender(getAddress(data.spender));setSelector(data.selector);
+      setDiscoveredRoute({asset:data.asset,target:data.target,spender:data.spender,selector:data.selector,tool:data.tool,source:data.source,warning:data.warning});
+      setLifiStatus('Route fields filled for your review. No owner transaction has been sent. Apply the missing permissions one at a time below.');
+    }catch(e){setLifiStatus('');setError(e instanceof Error?e.message:'Could not discover a route.');}
+    finally{setDiscoverBusy(false)}
+  }
   async function allowLifi(){
     if(!addressOf('lifi')||!status.lifiOk)return setError('Deploy and verify the new LI.FI adapter first.');
     if(!isAddress(target)||!isAddress(spender)||!/^0x[0-9a-fA-F]{8}$/.test(selector))return setError('Enter a verified LI.FI target, spender and 4-byte selector.');
@@ -378,10 +405,15 @@ export function IndexioAdaptiveBuyDeployer(){
       <button className="secondary" disabled={!eligible||!ackTaxChange||!!busy||!wallet||taxOnchain===null} onClick={updatePolicy}>Update transfer-loss policy (owner transaction)</button>
     </section>
     <section className="card"><div className="stepHead"><div className="stepNo">06</div><div><h2>Configure LI.FI permissions (optional)</h2><p>Only whitelist infrastructure that you have verified independently. Do not guess target, spender, or function selector. A new LI.FI adapter starts in bootstrap mode. If finalized, this page automatically uses the six-hour propose/activate path for each new permission.</p></div></div>
-      <label className="field">Verified LI.FI target<input value={target} onChange={e=>setTarget(e.target.value)} placeholder="0x…"/></label>
-      <label className="field">Verified LI.FI spender<input value={spender} onChange={e=>setSpender(e.target.value)} placeholder="0x…"/></label>
-      <label className="field">Verified 4-byte selector<input value={selector} onChange={e=>setSelector(e.target.value)} placeholder="0x12345678"/></label>
-      <button className="ghost" style={{marginTop:12}} disabled={!eligible||!!busy||!status.lifiOk||!wallet} onClick={()=>allowLifi().catch(e=>setError(e?.message||String(e)))}>Apply next missing LI.FI permission</button>
+      <div className="notice" style={{marginTop:12}}><b>Find the permissions from a real LI.FI quote</b><p>Choose an asset you plan to buy in an existing index. This read-only check looks for a 10 USDC route from your new LI.FI adapter to your Adaptive Buy Router. It checks the returned target and spender against LI.FI’s official Base infrastructure listings. Quotes are not trade simulations.</p>
+        <label className="field">Base asset or B20 contract address<input value={discoverAsset} onChange={e=>{setDiscoverAsset(e.target.value);setDiscoveredRoute(null);setTarget('');setSpender('');setSelector('')}} placeholder="0x…"/></label>
+        <button type="button" className="ghost" disabled={!status.lifiOk||!status.lifiApproved||!status.routerOk||!!busy||discoverBusy} onClick={()=>void discoverLifiPermission()}>{discoverBusy?'Finding a live LI.FI route…':'Find LI.FI permissions (free)'}</button>
+        {discoveredRoute&&<p><strong>Found: {discoveredRoute.tool}</strong> · reviewed LI.FI Base infrastructure<br/>Token: {short(discoveredRoute.asset)}<br/>Target: {short(discoveredRoute.target)}<br/>Spender: {short(discoveredRoute.spender)}<br/>Selector: {discoveredRoute.selector}<br/>Fields filled below; carefully review before approving. Different assets or venues can use different tuples.</p>}
+      </div>
+      <label className="field">Verified LI.FI target<input value={target} onChange={e=>{setTarget(e.target.value);setDiscoveredRoute(null)}} placeholder="0x…"/></label>
+      <label className="field">Verified LI.FI spender<input value={spender} onChange={e=>{setSpender(e.target.value);setDiscoveredRoute(null)}} placeholder="0x…"/></label>
+      <label className="field">Verified 4-byte selector<input value={selector} onChange={e=>{setSelector(e.target.value);setDiscoveredRoute(null)}} placeholder="0x12345678"/></label>
+      <button className="ghost" style={{marginTop:12}} disabled={!eligible||!!busy||discoverBusy||!status.lifiOk||!status.lifiApproved||!wallet} onClick={()=>allowLifi().catch(e=>setError(e?.message||String(e)))}>Apply next missing LI.FI permission</button>
       {lifiStatus&&<div className="notice">{lifiStatus}</div>}
     </section>
     <section className="card"><div className="stepHead"><div className="stepNo">07</div><div><h2>Check an existing vault (free)</h2><p>Verify the selected vault belongs to the pinned V3.3.8 Factory, its share token belongs to the vault and it keeps the original sell router. Read-only checks use no gas.</p></div></div>
