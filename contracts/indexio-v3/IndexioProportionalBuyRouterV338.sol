@@ -81,15 +81,15 @@ contract IndexioProportionalBuyRouterV338 is Ownable2Step, ReentrancyGuard {
     // This add-on is dedicated to the deployed V3.3.8 protocol. An accidentally
     // supplied older Factory must fail IN THE CONSTRUCTOR, before any user funds
     // could be approved or routed to the wrong contract.
-    address public constant CANONICAL_FACTORY = 0x0db41d4b3221bd4244a83da39e0ef91a706a0e62;
-    address public constant CANONICAL_OWNER = 0x3118fe32b27651734fe4d966d1bc240be6e3139d;
-    address public constant CANONICAL_REGISTRY = 0x5c4791e3b752d9b084e8fd76932e82c2031f15c1;
-    address public constant CANONICAL_USDC = 0x833589fcd6edb6e08f4c7c32d4f71b54bda02913;
-    address public constant CANONICAL_TREASURY = 0x3118fe32b27651734fe4d966d1bc240be6e3139d;
-    address public constant CANONICAL_SAFETY = 0xaa3d6f215deaf871759936d19f157104ffe9644d;
-    address public constant CANONICAL_TRANSFER_POLICY = 0x311e4894b50484d10641133609d44668e627585c;
-    address public constant CANONICAL_VAULT_DEPLOYER = 0x372a68bf3dc1b5b416f3849a7df502b706805a8a;
-    address public constant ORIGINAL_EXECUTION_ROUTER = 0x38476748a9197f0ef02a812948f123e892ac8aca;
+    address public constant CANONICAL_FACTORY = 0x0dB41D4B3221bD4244A83Da39e0eF91a706a0e62;
+    address public constant CANONICAL_OWNER = 0x3118FE32B27651734fe4D966D1bC240bE6e3139D;
+    address public constant CANONICAL_REGISTRY = 0x5C4791e3B752d9b084E8FD76932E82C2031f15c1;
+    address public constant CANONICAL_USDC = 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913;
+    address public constant CANONICAL_TREASURY = 0x3118FE32B27651734fe4D966D1bC240bE6e3139D;
+    address public constant CANONICAL_SAFETY = 0xaa3D6F215DeAf871759936D19F157104fFE9644D;
+    address public constant CANONICAL_TRANSFER_POLICY = 0x311E4894b50484d10641133609D44668E627585c;
+    address public constant CANONICAL_VAULT_DEPLOYER = 0x372A68bF3dc1b5B416f3849A7df502b706805A8a;
+    address public constant ORIGINAL_EXECUTION_ROUTER = 0x38476748A9197F0eF02A812948F123E892Ac8aca;
 
     uint256 private constant BPS = 10_000;
     uint256 public constant MAX_SWAP_SLIPPAGE_BPS = 1_000; // <=10%; minSharesOut remains mandatory
