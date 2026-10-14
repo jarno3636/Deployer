@@ -52,6 +52,9 @@ async function validateDeployment(address:string,transactionHash:string,treasury
  if(receipt.status!=='success'||!receipt.contractAddress||getAddress(receipt.contractAddress)!==normalized)
   throw Error('The transaction did not successfully deploy this contract address on Base.');
  const transaction=await client.getTransaction({hash:transactionHash as Hex});
+ // Base also has deposit transactions, which have no chainId property in viem.
+ // They are not normal wallet deployment transactions and must be rejected.
+ if(transaction.type==='deposit')throw Error('A Base deposit transaction cannot deploy this Pay Router.');
  if(transaction.chainId!==base.id)throw Error('Deployment transaction was not sent on Base Mainnet.');
  if(transaction.to!==null)throw Error('This transaction is not a direct contract deployment.');
  const constructorArgs=encodeAbiParameters([{type:'address'}],[getAddress(treasury)]);
