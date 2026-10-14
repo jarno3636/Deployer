@@ -59,7 +59,9 @@ export function IndexioPayDeployer(){
   const receipt=await pc.getTransactionReceipt({hash:hash as Hex});
   if(receipt.status!=='success'||!receipt.contractAddress)throw Error('This transaction did not successfully create a contract.');
   const transaction=await pc.getTransaction({hash:hash as Hex});
-  if(transaction.to!==null||transaction.chainId!==8453)throw Error('This is not a Base Mainnet contract creation transaction.');
+  // Deposit transactions on Base have no chainId field and cannot be restored as wallet deployments.
+  if(transaction.type==='deposit')throw Error('A Base deposit transaction is not a wallet contract deployment.');
+  if(transaction.to!==null||transaction.chainId!==base.id)throw Error('This is not a Base Mainnet contract creation transaction.');
   const input=transaction.input.toLowerCase();
   if(!input.startsWith(indexioPayBytecode.toLowerCase())||input.length!==indexioPayBytecode.length+64)
    throw Error('This transaction does not match the exact Indexio Pay Router build included here.');
