@@ -3,12 +3,12 @@
   "version": "1.1.0",
   "private": true,
   "scripts": {
-    "predev": "npm run compile:indexio-v338 && npm run compile:indexio-adaptive-buy",
+    "predev": "npm run compile:indexio-v338 && npm run compile:indexio-adaptive-buy && npm run compile:indexio-pay",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "check:artifacts": "node scripts/check-artifacts.mjs",
-    "prebuild": "npm run check:indexio-v334 && npm run compile:scanarc && npm run compile:indexio && npm run compile:indexio-v25 && npm run compile:indexio-v3 && npm run compile:indexio-v338 && npm run compile:indexio-adaptive-buy",
+    "prebuild": "npm run check:indexio-v334 && npm run compile:scanarc && npm run compile:indexio && npm run compile:indexio-v25 && npm run compile:indexio-v3 && npm run compile:indexio-v338 && npm run compile:indexio-adaptive-buy && npm run compile:indexio-pay",
     "compile:scanarc": "node scripts/compile-scanarc-router.mjs",
     "compile:bridge": "node scripts/compile-scanarc-bridge.mjs",
     "compile:indexio": "node scripts/compile-indexio.mjs && node scripts/compile-indexio-adapter.mjs",
@@ -22,7 +22,8 @@
     "check:indexio-v31": "node scripts/check-indexio-v31-security.mjs",
     "release:indexio-v31": "npm run check:indexio-v31 && npm run compile:indexio-v3 && npm run build",
     "check:indexio-v334": "node scripts/check-indexio-v334-security.mjs",
-    "compile:indexio-adaptive-buy": "node scripts/compile-indexio-adaptive-buy.mjs"
+    "compile:indexio-adaptive-buy": "node scripts/compile-indexio-adaptive-buy.mjs",
+    "compile:indexio-pay": "node scripts/compile-indexio-pay.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
