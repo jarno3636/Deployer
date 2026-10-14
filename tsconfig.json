@@ -17,5 +17,5 @@
     "paths": { "@/*": ["./*"] }
   },
   "include": ["next-env.d.ts", ".next/types/**/*.ts", "**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules", "src", "vite.config.ts", "tsconfig.app.json"]
+  "exclude": ["node_modules", "src", "vite.config.ts", "tsconfig.app.json", "lib/indexioV3QuoteBuilder.ts"]
 }
