@@ -22,6 +22,7 @@ export default function Page(){
   </section>
   <section className="launchSection"><div className="launchSectionHead"><h2>Other deployment tools</h2><p>The existing Indexio suite remains available without changes.</p></div>
    <div className="launchGrid">
+    <Link href="/indexio/v3/v34" className="launchTile"><span>NEW · GOVERNANCE</span><h3>Indexio V3.4</h3><p>New suite with post-vote fresh-plan authorization, resumable deployment and existing registry.</p><b>Open V3.4 suite ↗</b></Link>
     <Link href="/indexio/v3/v338" className="launchTile"><span>01 · PROTOCOL</span><h3>Indexio V3.3.8</h3><p>Deploy and manage the index factory, routers, adapters and vaults.</p><b>Open V3.3.8 suite ↗</b></Link>
     <Link href="/indexio/v3/adaptive-buy" className="launchTile"><span>02 · TRADING</span><h3>Adaptive Buy</h3><p>Set up and verify the V3.3.8 adaptive buy extension.</p><b>Open deployment ↗</b></Link>
     <Link href="/indexio/v3/route-test" className="launchTile"><span>03 · DIAGNOSTICS</span><h3>Route testing</h3><p>Check available liquidity and trading routes before enabling them.</p><b>Open route tests ↗</b></Link>
