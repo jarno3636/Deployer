@@ -17,7 +17,7 @@ interface IFactoryExecV3 {
     function executionRouterLocked() external view returns(bool);
     function transferPolicy() external view returns(address);
 }
-interface ITransferPolicyExecV3 { function expectedReceiveBps(address) external view returns(uint16); }
+interface ITransferPolicyExecV3 { function expectedReceiveBps(address) external view returns(uint16); function minimumReceiveBps(address) external view returns(uint16); }
 interface IVaultExecV3 {
     function assets() external view returns(address[] memory);
     function weights() external view returns(uint16[] memory);
@@ -279,7 +279,7 @@ contract IndexioExecutionRouterV3 is Ownable2Step,ReentrancyGuard {
         require(senderBefore>=senderAfter&&senderBefore-senderAfter==amount,"sender debit");
         received=IERC20(token).balanceOf(to)-b;
         require(received>0&&received<=amount,"received");
-        uint256 bps=ITransferPolicyExecV3(IFactoryExecV3(factory).transferPolicy()).expectedReceiveBps(token);
+        uint256 bps=ITransferPolicyExecV3(IFactoryExecV3(factory).transferPolicy()).minimumReceiveBps(token);
         uint256 floorAmount=Math.mulDiv(amount,bps,BPS);
         if(floorAmount>0)floorAmount-=1;
         require(received>=floorAmount,"transfer exceeds policy");

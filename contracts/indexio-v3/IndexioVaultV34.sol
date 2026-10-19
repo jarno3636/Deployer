@@ -18,7 +18,7 @@ interface IFactoryV3 {
     function transferPolicy() external view returns(address);
 }
 interface IRegistryCheckV3 { function requireAsset(address,uint16) external view returns(uint8); }
-interface ITransferPolicyV3 { function expectedReceiveBps(address) external view returns(uint16); }
+interface ITransferPolicyV3 { function expectedReceiveBps(address) external view returns(uint16); function minimumReceiveBps(address) external view returns(uint16); }
 interface ISafetyV3 { function depositsPaused(address) external view returns(bool); function tradingPaused(address) external view returns(bool); }
 interface IShareIdentityV3 { function vault() external view returns(address); }
 interface IIncomeIdentityV3 {
@@ -92,7 +92,13 @@ contract IndexioVaultV34 is ReentrancyGuard {
     function assets() external view returns(address[] memory){return _assets;}
     function weights() external view returns(uint16[] memory){return _weights;}
     function executionRouter() external view returns(address){return IFactoryV3(factory).executionRouter();}
-    function expectedReceiveBps(address token) public view returns(uint16){return ITransferPolicyV3(IFactoryV3(factory).transferPolicy()).expectedReceiveBps(token);}
+    function expectedReceiveBps(address token) public view returns(uint16){
+        // Prefer an actually observed vault receipt over an optimistic 100% quote.
+        // An explicit tighter protocol policy remains the upper bound on expected receipts.
+        uint16 hint=ITransferPolicyV3(IFactoryV3(factory).transferPolicy()).expectedReceiveBps(token);
+        uint16 observed=lastObservedReceiveBps[token];
+        return observed>0 && observed<hint ? observed : hint;
+    }
 
     /// @notice Creator may freely fix assets/weights before the first successful investment.
     /// @dev Once seeded, direct creator editing is permanently disabled and shareholder governance takes over.
@@ -309,12 +315,17 @@ contract IndexioVaultV34 is ReentrancyGuard {
 
     function _recordTransfer(address token,address to,uint256 requested,uint256 received) internal {
         uint256 bps=Math.min(uint256(BPS),Math.mulDiv(received,BPS,requested));
-        // Observed rates are informational only: never override the owner-controlled policy.
+        // Only transfers received BY this vault calibrate proportional deposits;
+        // payout/tax transfers to other recipients can have different rates.
+        if(to==address(this)){
+            uint256 floorBps=ITransferPolicyV3(IFactoryV3(factory).transferPolicy()).minimumReceiveBps(token);
+            lastObservedReceiveBps[token]=uint16(Math.max(floorBps,bps));
+        }
         emit TransferBehaviorObserved(token,to,requested,received,uint16(bps));
     }
 
     function _enforceTransferFloor(address token,uint256 requested,uint256 received) internal view {
-        uint256 policyBps=ITransferPolicyV3(IFactoryV3(factory).transferPolicy()).expectedReceiveBps(token);
+        uint256 policyBps=ITransferPolicyV3(IFactoryV3(factory).transferPolicy()).minimumReceiveBps(token);
         // One smallest token unit accommodates integer rounding in fee-on-transfer implementations.
         uint256 minimum=Math.mulDiv(requested,policyBps,BPS);
         if(minimum>0)minimum-=1;
