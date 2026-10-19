@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.30;
-interface IVotesV3 { function getPastVotes(address,uint256) external view returns(uint256); function getPastTotalSupply(uint256) external view returns(uint256); }
+interface IVotesV3 { function getPastVotes(address,uint256) external view returns(uint256); function getPastTotalSupply(uint256) external view returns(uint256); function totalSupply() external view returns(uint256); function balanceOf(address) external view returns(uint256); }
 interface IVaultGovV3 { function executeGovernance(uint8,address[] calldata,uint16[] calldata,uint16,uint64) external; function governanceNonce() external view returns(uint64); function validateGovernanceProposal(uint8,address[] calldata,uint16[] calldata,uint16) external view; function executionRouter() external view returns(address); function factory() external view returns(address); }
 interface IFactoryOwnerGovV34 { function owner() external view returns(address); }
 /// @title Indexio Governor V3.4 — allocation votes, fresh plans approved by Factory owner Safe
@@ -10,12 +10,18 @@ interface IFactoryOwnerGovV34 { function owner() external view returns(address);
 contract IndexioGovernorV34 {
     uint16 constant BPS=10_000; uint16 public constant REBALANCE_QUORUM_BPS=1_500; uint16 public constant COMPOSITION_QUORUM_BPS=2_500; uint16 public constant PROPOSAL_THRESHOLD_BPS=50;
     uint32 public constant VOTING_PERIOD=3 days; uint32 public constant REBALANCE_EXIT=1 days; uint32 public constant COMPOSITION_EXIT=3 days; uint32 public constant EXECUTION_GRACE=7 days;
-    bytes32 public constant GOVERNANCE_RELEASE_ID=keccak256("INDEXIO_V3_4_LIVE_PLAN_APPROVAL");
+    bytes32 public constant GOVERNANCE_RELEASE_ID=keccak256("INDEXIO_V3_4_1_UNANIMOUS_FAST_TRACK");
     uint32 public constant MAX_PLAN_VALIDITY=20 minutes;
     address public immutable vault; IVotesV3 public immutable token; uint256 public proposalCount;
     // A fresh exact swap hash can be approved during the execution window.
     // The approver is the CURRENT Factory owner (use a properly configured Safe).
     mapping(uint256=>uint48) public planValidUntil;
+    // Expedited execution is possible only with 100% approval of snapshot shares AND
+    // continuing consent from all CURRENT share owners. Otherwise normal delays apply.
+    // This is opt-in: ordinary proposals and waiting periods are unchanged.
+    mapping(uint256=>bool) public unanimouslyFastTracked;
+    mapping(uint256=>address[]) private _yesVoters;
+    event UnanimousFastTracked(uint256 indexed id,uint256 snapshotSupply,uint48 normalExecuteAfter);
     event ExecutionPlanAuthorized(uint256 indexed id,bytes32 indexed executionHash,uint48 validUntil,address indexed approver);
     event ExecutionPlanRevoked(uint256 indexed id,address indexed approver);
     function planApprover() public view returns(address){return IFactoryOwnerGovV34(IVaultGovV3(vault).factory()).owner();}
@@ -26,15 +32,53 @@ contract IndexioGovernorV34 {
     event Proposed(uint256 indexed id,uint8 kind,address indexed proposer,uint48 snapshot,uint48 voteEnd,uint16 quorumBps,uint64 expectedNonce,bytes32 dataHash,bytes32 executionHash); event VoteCast(uint256 indexed id,address indexed voter,uint8 support,uint256 weight); event Queued(uint256 indexed id,uint48 executeAfter,uint48 executeBefore); event Canceled(uint256 indexed id); event Executed(uint256 indexed id);
     constructor(address vault_,address token_){require(vault_!=address(0)&&token_!=address(0),"config");vault=vault_;token=IVotesV3(token_);}
     function propose(uint8 kind,address[] calldata assets,uint16[] calldata weights,bytes32 /*unusedLegacyExecutionHash*/) external returns(uint256 id){require(kind<=1,"kind");uint48 snap=uint48(block.number-1);uint256 supply=token.getPastTotalSupply(snap);require(supply>0,"supply");require(token.getPastVotes(msg.sender,snap)>=_ceilDiv(supply*PROPOSAL_THRESHOLD_BPS,BPS),"threshold");IVaultGovV3(vault).validateGovernanceProposal(kind,assets,weights,0);bytes32 h=keccak256(abi.encode(kind,assets,weights));id=++proposalCount;uint48 end=uint48(block.timestamp+VOTING_PERIOD);uint16 q=kind==0?REBALANCE_QUORUM_BPS:COMPOSITION_QUORUM_BPS;uint64 nonce=IVaultGovV3(vault).governanceNonce();proposals[id]=Proposal(kind,q,snap,end,0,0,nonce,0,0,0,false,false,h,bytes32(0),msg.sender);emit Proposed(id,kind,msg.sender,snap,end,q,nonce,h,bytes32(0));}
-    function vote(uint256 id,uint8 support) external {Proposal storage p=proposals[id];require(p.voteEnd!=0&&block.timestamp<p.voteEnd&&!hasVoted[id][msg.sender]&&support<=2,"vote");uint256 w=token.getPastVotes(msg.sender,p.snapshot);require(w>0,"weight");hasVoted[id][msg.sender]=true;if(support==1)p.forVotes+=w;else if(support==0)p.againstVotes+=w;else p.abstainVotes+=w;emit VoteCast(id,msg.sender,support,w);}
+    function vote(uint256 id,uint8 support) external {Proposal storage p=proposals[id];require(p.voteEnd!=0&&block.timestamp<p.voteEnd&&p.executeAfter==0&&!p.canceled&&!hasVoted[id][msg.sender]&&support<=2,"vote");uint256 w=token.getPastVotes(msg.sender,p.snapshot);require(w>0,"weight");hasVoted[id][msg.sender]=true;if(support==1){p.forVotes+=w;_yesVoters[id].push(msg.sender);}else if(support==0)p.againstVotes+=w;else p.abstainVotes+=w;emit VoteCast(id,msg.sender,support,w);}
     function queue(uint256 id) external {Proposal storage p=proposals[id];require(p.voteEnd!=0&&block.timestamp>=p.voteEnd&&p.executeAfter==0&&!p.executed&&!p.canceled,"state");require(_passed(p),"failed");uint32 delay=p.kind==1?COMPOSITION_EXIT:REBALANCE_EXIT;p.executeAfter=uint48(block.timestamp+delay);p.executeBefore=uint48(uint256(p.executeAfter)+EXECUTION_GRACE);emit Queued(id,p.executeAfter,p.executeBefore);}
-    /// @notice Approve freshly prepared swap calldata AFTER voting AND the exit period.
+    /// @notice Optional fast track: all shares at the snapshot voted YES, and every
+    /// current share is still owned by a YES voter. This also checks the governance nonce.
+    /// A transfer to a non-voter removes the early-execution privilege automatically;
+    /// ordinary vote and exit delays are preserved as a fallback.
+    /// @dev Gas for this optional path scales with yes-voter count; it does not affect
+    /// regular queue or execution after the standard waiting period.
+    function fastTrackUnanimous(uint256 id) external {
+        Proposal storage p=proposals[id];
+        require(p.voteEnd!=0&&p.executeAfter==0&&!p.executed&&!p.canceled,"state");
+        require(IVaultGovV3(vault).governanceNonce()==p.expectedNonce,"stale");
+        require(_unanimousCurrentOwners(id,p),"not unanimously approved");
+        uint48 normalExecuteAfter=uint48(uint256(p.voteEnd)+(p.kind==1?COMPOSITION_EXIT:REBALANCE_EXIT));
+        p.executeAfter=normalExecuteAfter;
+        p.executeBefore=uint48(uint256(normalExecuteAfter)+EXECUTION_GRACE);
+        unanimouslyFastTracked[id]=true;
+        emit UnanimousFastTracked(id,token.getPastTotalSupply(p.snapshot),normalExecuteAfter);
+        emit Queued(id,normalExecuteAfter,p.executeBefore);
+    }
+    function _unanimousCurrentOwners(uint256 id,Proposal storage p) internal view returns(bool){
+        if(p.forVotes!=token.getPastTotalSupply(p.snapshot)||p.forVotes==0||p.againstVotes!=0||p.abstainVotes!=0)return false;
+        // Snapshot shares alone are insufficient: ensure nobody who now owns shares
+        // is excluded from the unanimous consent to bypass the exit window.
+        uint256 liveSupply=token.totalSupply();
+        if(liveSupply==0)return false;
+        uint256 liveYes;
+        address[] storage voters=_yesVoters[id];
+        for(uint256 i;i<voters.length;i++){
+            liveYes+=token.balanceOf(voters[i]);
+            if(liveYes>liveSupply)return false;
+        }
+        return liveYes==liveSupply;
+    }
+    function _executionReady(uint256 id,Proposal storage p) internal view returns(bool){
+        if(p.executeAfter==0||block.timestamp>p.executeBefore)return false;
+        if(block.timestamp>=p.executeAfter)return true;
+        return unanimouslyFastTracked[id]&&_unanimousCurrentOwners(id,p);
+    }
+    /// @notice Approve freshly prepared swap calldata AFTER voting AND the exit period,
+    /// or after a unanimous fast track with continued consent from current share owners.
     /// @dev This is privileged: the factory owner must independently verify token prices,
     ///      trade amounts, destination vault, adapters and full route calldata BEFORE approval.
     ///      Only the exact approved hash is executable; approvals last at most 20 minutes.
     function authorizeExecutionPlan(uint256 id,bytes32 hash,uint48 validUntil) external onlyPlanApprover {
         Proposal storage p=proposals[id];
-        require(p.executeAfter!=0&&block.timestamp>=p.executeAfter&&block.timestamp<=p.executeBefore,"window");
+        require(_executionReady(id,p),"window");
         require(!p.executed&&!p.canceled&&_passed(p),"proposal");
         require(IVaultGovV3(vault).governanceNonce()==p.expectedNonce,"stale");
         require(hash!=bytes32(0)&&hash!=keccak256(abi.encode(new uint256[](0)))&&validUntil>block.timestamp&&validUntil<=p.executeBefore,"hash/expiry");
@@ -50,9 +94,9 @@ contract IndexioGovernorV34 {
         delete planValidUntil[id];
         emit ExecutionPlanRevoked(id,msg.sender);
     }
-    function executable(uint256 id,bytes32 executionHash) external view returns(bool){Proposal storage p=proposals[id];return p.executeAfter!=0&&block.timestamp>=p.executeAfter&&block.timestamp<=p.executeBefore&&!p.executed&&!p.canceled&&IVaultGovV3(vault).governanceNonce()==p.expectedNonce&&executionHash!=bytes32(0)&&p.executionHash==executionHash&&planValidUntil[id]>=block.timestamp;}
-    function execute(uint256 id,address[] calldata assets,uint16[] calldata weights,bytes32 executionHash) external {require(msg.sender==IVaultGovV3(vault).executionRouter(),"router");Proposal storage p=proposals[id];require(p.executeAfter!=0&&block.timestamp>=p.executeAfter&&block.timestamp<=p.executeBefore&&!p.executed&&!p.canceled,"delay");require(executionHash!=bytes32(0)&&p.executionHash==executionHash&&planValidUntil[id]>=block.timestamp&&keccak256(abi.encode(p.kind,assets,weights))==p.dataHash,"data/plan");require(IVaultGovV3(vault).governanceNonce()==p.expectedNonce,"stale");p.executed=true;IVaultGovV3(vault).executeGovernance(p.kind,assets,weights,0,p.expectedNonce);emit Executed(id);}
+    function executable(uint256 id,bytes32 executionHash) external view returns(bool){Proposal storage p=proposals[id];return _executionReady(id,p)&&!p.executed&&!p.canceled&&IVaultGovV3(vault).governanceNonce()==p.expectedNonce&&executionHash!=bytes32(0)&&p.executionHash==executionHash&&planValidUntil[id]>=block.timestamp;}
+    function execute(uint256 id,address[] calldata assets,uint16[] calldata weights,bytes32 executionHash) external {require(msg.sender==IVaultGovV3(vault).executionRouter(),"router");Proposal storage p=proposals[id];require(_executionReady(id,p)&&!p.executed&&!p.canceled,"delay");require(executionHash!=bytes32(0)&&p.executionHash==executionHash&&planValidUntil[id]>=block.timestamp&&keccak256(abi.encode(p.kind,assets,weights))==p.dataHash,"data/plan");require(IVaultGovV3(vault).governanceNonce()==p.expectedNonce,"stale");p.executed=true;IVaultGovV3(vault).executeGovernance(p.kind,assets,weights,0,p.expectedNonce);emit Executed(id);}
     function cancel(uint256 id) external {Proposal storage p=proposals[id];require(!p.executed&&!p.canceled,"state");bool proposerEarly=msg.sender==p.proposer&&block.timestamp<p.voteEnd&&p.forVotes+p.againstVotes+p.abstainVotes==0;bool stale=IVaultGovV3(vault).governanceNonce()!=p.expectedNonce;bool expired=p.executeBefore!=0&&block.timestamp>p.executeBefore;require(proposerEarly||stale||expired,"auth");p.canceled=true;emit Canceled(id);}
-    function quorumRequired(uint256 id) public view returns(uint256){Proposal storage p=proposals[id];if(p.snapshot==0)return 0;return _ceilDiv(token.getPastTotalSupply(p.snapshot)*p.quorumBps,BPS);} function participation(uint256 id) public view returns(uint256){Proposal storage p=proposals[id];return p.forVotes+p.againstVotes+p.abstainVotes;} function quorumReached(uint256 id) external view returns(bool){return participation(id)>=quorumRequired(id);} function participationBps(uint256 id) external view returns(uint256){Proposal storage p=proposals[id];if(p.snapshot==0)return 0;uint256 s=token.getPastTotalSupply(p.snapshot);return s==0?0:(participation(id)*BPS/s);} function state(uint256 id) external view returns(uint8){Proposal storage p=proposals[id];if(p.voteEnd==0)return 0;if(p.canceled)return 7;if(p.executed)return 6;if(IVaultGovV3(vault).governanceNonce()!=p.expectedNonce)return 9;if(block.timestamp<p.voteEnd)return 1;if(!_passed(p))return 2;if(p.executeAfter==0)return 3;if(block.timestamp<p.executeAfter)return 4;if(block.timestamp<=p.executeBefore)return 5;return 8;}
+    function quorumRequired(uint256 id) public view returns(uint256){Proposal storage p=proposals[id];if(p.snapshot==0)return 0;return _ceilDiv(token.getPastTotalSupply(p.snapshot)*p.quorumBps,BPS);} function participation(uint256 id) public view returns(uint256){Proposal storage p=proposals[id];return p.forVotes+p.againstVotes+p.abstainVotes;} function quorumReached(uint256 id) external view returns(bool){return participation(id)>=quorumRequired(id);} function participationBps(uint256 id) external view returns(uint256){Proposal storage p=proposals[id];if(p.snapshot==0)return 0;uint256 s=token.getPastTotalSupply(p.snapshot);return s==0?0:(participation(id)*BPS/s);} function state(uint256 id) external view returns(uint8){Proposal storage p=proposals[id];if(p.voteEnd==0)return 0;if(p.canceled)return 7;if(p.executed)return 6;if(IVaultGovV3(vault).governanceNonce()!=p.expectedNonce)return 9;if(p.executeAfter!=0){if(_executionReady(id,p))return 5;if(block.timestamp<p.executeAfter)return 4;return 8;}if(block.timestamp<p.voteEnd)return 1;if(!_passed(p))return 2;return 3;}
     function _passed(Proposal storage p) internal view returns(bool){return participationInternal(p)>=_ceilDiv(token.getPastTotalSupply(p.snapshot)*p.quorumBps,BPS)&&p.forVotes>p.againstVotes;} function participationInternal(Proposal storage p) internal view returns(uint256){return p.forVotes+p.againstVotes+p.abstainVotes;} function _ceilDiv(uint256 a,uint256 b) internal pure returns(uint256){return a==0?0:(a-1)/b+1;}
 }
