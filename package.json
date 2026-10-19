@@ -23,7 +23,9 @@
     "release:indexio-v31": "npm run check:indexio-v31 && npm run compile:indexio-v3 && npm run build",
     "check:indexio-v334": "node scripts/check-indexio-v334-security.mjs",
     "compile:indexio-adaptive-buy": "node scripts/compile-indexio-adaptive-buy.mjs",
-    "compile:indexio-pay": "node scripts/compile-indexio-pay.mjs"
+    "compile:indexio-pay": "node scripts/compile-indexio-pay.mjs",
+    "compile:indexio-v342-adaptive": "node scripts/compile-indexio-v342-adaptive.mjs",
+    "check:indexio-v342-patch": "node scripts/check-indexio-v342-patch.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
