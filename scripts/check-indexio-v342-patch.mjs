@@ -1,0 +1,18 @@
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+const read=n=>fs.readFileSync(n,'utf8');
+const quotes=read('lib/indexioV3QuoteBuilder.ts');
+assert(!quotes.includes('tighterFloor'), 'legacy stricter minimum quote was restored');
+assert(quotes.includes('const first=stock?lifi:zeroX,second=stock?zeroX:lifi'), 'B20 fallback missing');
+const policy=read('contracts/indexio-v3/IndexioTransferPolicyV3.sol');
+assert(policy.includes('function minimumReceiveBps(address token)'), 'loss safety check missing');
+assert(policy.includes('MAX_AUTO_TAX_BPS = 500'), 'tax ceiling missing');
+const vault=read('contracts/indexio-v3/IndexioVaultV34.sol');
+assert(vault.includes('minimumReceiveBps(token)'), 'vault should use safety policy');
+assert(vault.includes('lastObservedReceiveBps[token]='), 'receipt learning missing');
+const router=read('contracts/indexio-v3/IndexioProportionalBuyRouterV342.sol');
+assert(router.includes('LEGACY_V338_FACTORY') && router.includes('factory_ != LEGACY_V338_FACTORY'),'reject historical factory');
+assert(router.includes('f.owner() == owner_'),'router owner should match current Factory owner');
+assert(router.includes('IIndexioRouterBoundAdapterV342(leg.adapter).callerRouter() == address(this)'),'require adapter bound');
+assert(!read('components/IndexioV34Deployer.tsx').includes('href="/indexio/v3/adaptive-buy"'),'wrong adaptive wizard link');
+console.log('PASS: source-level V3.4.2 patch invariants (not a Solidity compile or integration test)');
