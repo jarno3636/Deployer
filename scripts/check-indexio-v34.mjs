@@ -16,7 +16,7 @@ for (const [file, expected] of Object.entries(protectedFiles)) {
 const vault=fs.readFileSync('contracts/indexio-v3/IndexioVaultV34.sol','utf8');
 const governor=fs.readFileSync('contracts/indexio-v3/IndexioGovernorV34.sol','utf8');
 if(!vault.includes('IndexioGovernorV34 gov=new IndexioGovernorV34'))throw Error('V3.4 vault does not deploy the new governor');
-for (const text of ['function authorizeExecutionPlan', 'onlyPlanApprover', 'planValidUntil[id]>=block.timestamp', 'governanceNonce()==p.expectedNonce', 'function revokeExecutionPlan']){
+for (const text of ['function authorizeExecutionPlan', 'onlyPlanApprover', 'planValidUntil[id]>=block.timestamp', 'governanceNonce()==p.expectedNonce', 'function revokeExecutionPlan', 'function fastTrackUnanimous', '_unanimousCurrentOwners', '_executionReady', 'unanimouslyFastTracked[id]', 'token.balanceOf(voters[i])', 'INDEXIO_V3_4_1_UNANIMOUS_FAST_TRACK']){
   if(!governor.includes(text))throw Error(`Governor missing safety condition: ${text}`);
 }
 console.log('V3.4 source isolation and defensive checks: PASS. This is NOT an audit, compilation, or simulation.');
