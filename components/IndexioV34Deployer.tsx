@@ -20,7 +20,7 @@ import {
 const REGISTRY=getAddress('0x5C4791e3B752d9b084E8FD76932E82C2031f15c1');
 const USDC=getAddress('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
 const EXPLORER='https://basescan.org';
-const KEY='indexio-v34-live-plan-base-suite';
+const KEY='indexio-v341-unanimous-base-suite';
 const MAX_CHUNK_BYTES=23_500;
 const RELEASE_ID=keccak256(stringToHex('INDEXIO_V3_3_6_HARDENED_RC'));
 const FACTORY_READ=parseAbi(['function validateComposition(address[] assets,uint16[] weights)','function isVault(address) view returns (bool)']);
@@ -85,7 +85,7 @@ export function IndexioV34Deployer(){
   vaultCode:{creationCodeHash:indexioV34VaultCreationCodeHash,creationCodeLength:indexioV34VaultCreationCodeLength,segmentA:suite.addresses.codeBlobA||null,segmentALength:blobLengths[0],segmentB:suite.addresses.codeBlobB||null,segmentBLength:blobLengths[1]},
   vaultDeployer:suite.addresses.vaultDeployer||null,factory:suite.addresses.factory||null,executionRouter:suite.addresses.executionRouter||null,
   adapters:{zeroX:suite.addresses.zeroXAdapter||null,lifi:suite.addresses.lifiAdapter||null},
-  governance:{release:'INDEXIO_V3_4_LIVE_PLAN_APPROVAL',votePeriodDays:3,rebalanceExitDays:1,compositionExitDays:3,planValidityMinutes:20,planApproval:'Factory owner (recommend Safe multisig)',note:'Approve fresh exact plan hash after the exit period; do not treat quoted output as independent fair price'},
+  governance:{release:'INDEXIO_V3_4_1_UNANIMOUS_FAST_TRACK',votePeriodDays:3,rebalanceExitDays:1,compositionExitDays:3,planValidityMinutes:20,planApproval:'Factory owner (recommend Safe multisig)',note:'Approve fresh exact plan hash after the exit period; do not treat quoted output as independent fair price'},
   protocol:{protocolFeeBps:100,maxCreatorFeeBps:100,maxCreatorIncomeRewardBps:2000,minGrossSeedUsdc:'25',assetWeightTotalBps:10000,maxAssetsPerIndex:20},
   appCalls:{createVault:'deploy(string,string,address[],uint16[],uint16,uint16,uint16,uint256)',seedIndex:'seedIndex(address,uint256,(address,uint256,uint256,uint256,bytes)[],address,uint256)',factoryDiscovery:'vaultCount() / allVaults(uint256)',vaultCreatedEvent:'VaultDeployed(address,address,address,address,address,address,uint16,uint256)'},
   wiring:{safetyFactoryLocked:Boolean(suite.bindings.safety),vaultDeployerFactoryLocked:Boolean(suite.bindings.deployer),zeroXAdapterApproved:Boolean(suite.bindings.zeroX),lifiAdapterApproved:Boolean(suite.bindings.lifi),factoryRouterLocked:Boolean(suite.bindings.factoryRouter)},
@@ -112,7 +112,7 @@ Factory Deployment Transaction: ${suite.transactions.factory||''}
 Execution Router: ${suite.addresses.executionRouter||''}
 0x Restricted Adapter: ${suite.addresses.zeroXAdapter||''}
 LI.FI Restricted Adapter: ${suite.addresses.lifiAdapter||''}
-Router / Adapter Release ID: ${RELEASE_ID}\nNew governor release: INDEXIO_V3_4_LIVE_PLAN_APPROVAL
+Router / Adapter Release ID: ${RELEASE_ID}\nNew governor release: INDEXIO_V3_4_1_UNANIMOUS_FAST_TRACK
 
 Minimum Seed: 25 USDC
 Protocol Fee: 100 bps (1%)
