@@ -27,21 +27,40 @@ const targets=[
 ];
 function artifact(src,name){const c=output.contracts?.[src]?.[name];if(!c)throw new Error(`Missing ${src}:${name}`);return {abi:c.abi,bytecode:`0x${c.evm.bytecode.object}`,creationBytes:c.evm.bytecode.object.length/2,runtimeBytes:c.evm.deployedBytecode.object.length/2};}
 const A=Object.fromEntries(targets.map(([k,s,n])=>[k,artifact(s,n)]));
-const vaultHash=keccak256(A.vault.bytecode), vaultLength=A.vault.creationBytes;
-let generated=`// AUTO-GENERATED Indexio V3.4 artifacts. Do not edit.\nexport const indexioV34CompilerVersion=${JSON.stringify(solc.version())} as const;\nexport const indexioV34VaultCreationCodeHash=${JSON.stringify(vaultHash)} as \`0x\${string}\`;\nexport const indexioV34VaultCreationCodeLength=${vaultLength} as const;\n`;
-for(const [k] of targets){const a=A[k],prefix=`indexioV34${k[0].toUpperCase()}${k.slice(1)}`;generated+=`export const ${prefix}Abi=${JSON.stringify(a.abi)} as const;\nexport const ${prefix}Bytecode=${JSON.stringify(a.bytecode)} as \`0x\${string}\`;\n`;}
-fs.writeFileSync(path.join(root,'lib/indexio-v34.generated.ts'),generated);
-fs.mkdirSync(path.join(root,'public'),{recursive:true});
-fs.writeFileSync(path.join(root,'public/indexio-v34-vault-artifact.json'),JSON.stringify({version:'3.4',network:'Base Mainnet',chainId:8453,compilerVersion:solc.version(),creationCodeHash:vaultHash,creationCodeLength:vaultLength,bytecode:A.vault.bytecode}));
-fs.mkdirSync(path.join(root,'artifacts'),{recursive:true});
-fs.writeFileSync(path.join(root,'artifacts/indexio-v34-standard-json-input.json'),JSON.stringify(input));
-fs.writeFileSync(
-  path.join(root,'lib/indexio-v34-verification.generated.ts'),
-  `// AUTO-GENERATED Indexio V3.4 Etherscan verification input. Do not edit.\nexport const indexioV34StandardJsonInput=${JSON.stringify(JSON.stringify(input))} as const;\n`,
-);
+// Include code spawned by the vault constructor (governor, income hub, shares) in the checks.
+const ALL_CONCRETE=[];
 let failed=false;
+for(const [file, entries] of Object.entries(output.contracts||{})) for(const [name,c] of Object.entries(entries)) {
+ const creation=c.evm?.bytecode?.object||'';
+ const runtime=c.evm?.deployedBytecode?.object||'';
+ if (!creation || !runtime || /[^0-9a-f]/i.test(creation+runtime)) continue;
+ const creationBytes=creation.length/2,runtimeBytes=runtime.length/2;
+ ALL_CONCRETE.push({file,name,creationBytes,runtimeBytes});
+ if (runtimeBytes>24_576||creationBytes>49_152){console.error(`${file}:${name} exceeds EIP-170/EIP-3860 limits: ${creationBytes} init; ${runtimeBytes} runtime`);failed=true;}
+}
+
+const vaultHash=keccak256(A.vault.bytecode), vaultLength=A.vault.creationBytes;
+let generated=`// AUTO-GENERATED Indexio V3.4.2 artifacts. Do not edit.\nexport const indexioV34CompilerVersion=${JSON.stringify(solc.version())} as const;\nexport const indexioV34VaultCreationCodeHash=${JSON.stringify(vaultHash)} as \`0x\${string}\`;\nexport const indexioV34VaultCreationCodeLength=${vaultLength} as const;\n`;
+generated+=`export const indexioV34BytecodeSizes=${JSON.stringify(Object.fromEntries(targets.map(([k])=>[k,{creationBytes:A[k].creationBytes,runtimeBytes:A[k].runtimeBytes}]))) } as const;\n`;
+for(const [k] of targets){const a=A[k],prefix=`indexioV34${k[0].toUpperCase()}${k.slice(1)}`;generated+=`export const ${prefix}Abi=${JSON.stringify(a.abi)} as const;\nexport const ${prefix}Bytecode=${JSON.stringify(a.bytecode)} as \`0x\${string}\`;\n`;}
+// Persist generated artifacts only after the size gates pass (below).
+fs.mkdirSync(path.join(root,'public'),{recursive:true});
+// Artifact JSON is generated below after safety gates pass.
+fs.mkdirSync(path.join(root,'artifacts'),{recursive:true});
+// Standard JSON is generated below after safety gates pass.
+// Etherscan input is generated below after safety gates pass.
 for(const [k] of targets){console.log(`${k}: ${A[k].creationBytes} creation; ${A[k].runtimeBytes} runtime`);if(A[k].runtimeBytes>24_576){console.error(`${k} exceeds EIP-170 runtime limit`);failed=true;}}
 if(vaultLength>49_152){console.error(`Vault init code exceeds EIP-3860 limit: ${vaultLength}`);failed=true;}
 if(vaultLength>47_000){console.error(`Vault init code exceeds the two-blob storage capacity: ${vaultLength}`);failed=true;}
+if(vaultLength>46_000){console.error(`Vault init code (${vaultLength} bytes) has insufficient constructor-argument headroom (46,000 byte defensive ceiling)`);failed=true;}
+const maxSegment=Math.ceil(vaultLength/2);
+if(maxSegment>23_500){console.error(`Code blob segment (${maxSegment} bytes) exceeds the 23,500-byte constructor rule`);failed=true;}
 if(A.codeBlob.runtimeBytes>24_576){console.error('Code blob exceeds EIP-170 runtime limit');failed=true;}
 console.log(`vaultCreationCodeHash: ${vaultHash}`);if(failed)process.exit(1);
+fs.writeFileSync(path.join(root,'lib/indexio-v34.generated.ts'),generated);
+fs.writeFileSync(path.join(root,'public/indexio-v34-vault-artifact.json'),JSON.stringify({version:'3.4.2',network:'Base Mainnet',chainId:8453,compilerVersion:solc.version(),creationCodeHash:vaultHash,creationCodeLength:vaultLength,bytecode:A.vault.bytecode}));
+fs.writeFileSync(path.join(root,'artifacts/indexio-v34-standard-json-input.json'),JSON.stringify(input));
+fs.writeFileSync(path.join(root,'lib/indexio-v34-verification.generated.ts'),`// AUTO-GENERATED Indexio V3.4.2 Etherscan verification input. Do not edit.\nexport const indexioV34StandardJsonInput=${JSON.stringify(JSON.stringify(input))} as const;\n`);
+fs.writeFileSync(path.join(root,'public/indexio-v342-suite-artifacts.json'),JSON.stringify({version:'3.4.2',chainId:8453,network:'Base Mainnet',compilerVersion:solc.version(),optimizer:{enabled:true,runs:500,viaIR:true},vaultCreationCodeHash:vaultHash,vaultCreationCodeLength:vaultLength,contracts:Object.fromEntries(Object.entries(A).map(([key,a])=>[key,{...a,bytecodeHash:keccak256(a.bytecode)}])),compiledContracts:ALL_CONCRETE,gasAndSimulation:'Required separately before each mainnet wallet submission'},null,2));
+fs.writeFileSync(path.join(root,'public/indexio-v342-size-report.json'),JSON.stringify({compilerVersion:solc.version(),chainId:8453,hardLimits:{maxRuntimeBytes:24576,maxInitCodeBytes:49152,maxBlobPayloadBytes:23500,maxVaultCreationBytes:46000},vaultCreationCodeHash:vaultHash,vaultCreationCodeLength:vaultLength,compiledContracts:ALL_CONCRETE},null,2));
+

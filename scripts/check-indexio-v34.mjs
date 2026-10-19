@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 const protectedFiles={
-  "IndexioExecutionRouterV3.sol": "54c87dab8a262bf15ecc8f761d5a92e4c94610ed37502eb67364f3502607b7f9",
+  "IndexioExecutionRouterV3.sol": "b02182fe0cc16c939d81dae519d62c60f650944e20e319df2bbefe9a1bacf7c8",
   "IndexioFactoryV338.sol": "779bc276b7a21722e3a1ab411d0c4dc3bb45d2e7d52b7d3d169a99bcad829e62",
   "IndexioVaultDeployerV338.sol": "936faf002cb9fb250f5708aef637840630d5ae6e6a6b54404f6b2ec72ab6ad06",
   "IndexioRestrictedSwapAdapterV3.sol": "cc456b85ecad0f61312af09063791f100c80069f1e2cde26d619afd80d8a88e5",

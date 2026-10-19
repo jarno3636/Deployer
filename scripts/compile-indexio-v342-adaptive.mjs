@@ -47,6 +47,9 @@ if(failed)process.exit(1);
 fs.mkdirSync(path.join(root,'artifacts'),{recursive:true});
 fs.writeFileSync(path.join(root,'artifacts/indexio-v342-adaptive-standard-json-input.json'),JSON.stringify(input));
 fs.writeFileSync(path.join(root,'artifacts/indexio-v342-adaptive-artifacts.json'),JSON.stringify({status:'unreviewed-development-candidate',compiler:solc.version(),contracts:artifacts},null,2));
+fs.mkdirSync(path.join(root,'public'),{recursive:true});
+fs.writeFileSync(path.join(root,'public/indexio-v342-adaptive-artifacts.json'),JSON.stringify({version:'3.4.2',chainId:8453,network:'Base Mainnet',compiler:solc.version(),contracts:artifacts},null,2));
+fs.writeFileSync(path.join(root,'lib/indexio-v342-adaptive-verification.generated.ts'),`// GENERATED V3.4.2 exact source verification input.\nexport const indexioV342AdaptiveStandardJsonInput=${JSON.stringify(JSON.stringify(input))} as const;\n`);
 let ts='// GENERATED AFTER npm run compile:indexio-v342-adaptive; development candidate only.\n';
 for(const [key,a] of Object.entries(artifacts)){
   const title=key==='zeroX'?'ZeroX':key[0].toUpperCase()+key.slice(1);

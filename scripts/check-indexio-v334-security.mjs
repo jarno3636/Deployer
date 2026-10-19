@@ -24,7 +24,7 @@ const checks = [
   ['creator-controlled preseed editing stopped after seed', vault.includes('msg.sender==creator') && vault.includes('!seeded&&!closed&&shareToken.totalSupply()==0')],
   ['governance share-weighted + protected execution', governor.includes('getPastVotes') && governor.includes('dataHash') && governor.includes('executionHash') && governor.includes('COMPOSITION_EXIT=3 days')],
   ['router requires approved adapter to swap', router.includes('approvedAdapter[sellLegs[i].adapter]') && router.includes('approvedAdapter[t.adapter]')],
-  ['tax policy bounded to 20% losses', policy.includes('MIN_RECEIVE_BPS = 8_000') && vault.includes('_enforceTransferFloor') && router.includes('transfer exceeds policy')],
+  ['tax policy bounded to 5% actual loss for new vaults', policy.includes('MAX_AUTO_TAX_BPS = 500') && policy.includes('MIN_RECEIVE_BPS = 9_500') && (r_vault => r_vault.includes('minimumReceiveBps(token)') && r_vault.includes('_enforceTransferFloor'))(read('IndexioVaultV34')) && router.includes('transfer exceeds policy')],
   ['vault rejects asymmetric deposits', vault.includes('MAX_DEPOSIT_IMBALANCE_BPS=100') && vault.includes('imbalanced deposit')],
   ['dust redemption can skip a zero-value leg', vault.includes('if(amount==0)return 0;') && router.includes('if(routerAmount==0)')],
   ['buy refunds against settlement pre-pull baseline', router.includes('uint256 settlementBaseline=IERC20(settlementToken).balanceOf(address(this));') && router.includes('settlementRefund=settlementBalance-settlementBaseline')],
