@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useAccount, useConnect, usePublicClient, useSwitchChain, useWalletClient } from 'wagmi';
 import { base } from 'viem/chains';
-import { createWalletClient, custom, decodeEventLog, encodeAbiParameters, getAddress, isAddress, keccak256, parseAbi, stringToHex, type Address, type Hex } from 'viem';
+import { createWalletClient, custom, decodeEventLog, encodeAbiParameters, encodeDeployData, getAddress, isAddress, keccak256, parseAbi, stringToHex, type Address, type Hex } from 'viem';
 import {
   indexioV34SafetyControllerAbi,indexioV34SafetyControllerBytecode,
   indexioV34TransferPolicyAbi,indexioV34TransferPolicyBytecode,
@@ -14,21 +14,28 @@ import {
   indexioV34ExecutionRouterAbi,indexioV34ExecutionRouterBytecode,
   indexioV34RestrictedSwapAdapterAbi,indexioV34RestrictedSwapAdapterBytecode,
   indexioV34LifiSwapAdapterAbi,indexioV34LifiSwapAdapterBytecode,
-  indexioV34VaultBytecode,indexioV34VaultCreationCodeHash,indexioV34VaultCreationCodeLength,
+  indexioV34VaultBytecode,indexioV34VaultCreationCodeHash,indexioV34VaultCreationCodeLength,indexioV34CompilerVersion,indexioV34BytecodeSizes,
 } from '../lib/indexio-v34.generated';
+import {
+ v342AdaptiveRouterAbi,v342AdaptiveRouterBytecode,
+ v342AdaptiveZeroXAbi,v342AdaptiveZeroXBytecode,
+ v342AdaptiveLifiAbi,v342AdaptiveLifiBytecode,
+} from '../lib/indexio-v342-adaptive.generated';
 
 const REGISTRY=getAddress('0x5C4791e3B752d9b084E8FD76932E82C2031f15c1');
 const USDC=getAddress('0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913');
 const EXPLORER='https://basescan.org';
-const KEY='indexio-v341-unanimous-base-suite';
+const KEY='indexio-v342-protocol-mainnet-suite';
+const MAX_INIT_CODE_BYTES=49_152;
+const MAX_RUNTIME_BYTES=24_576;
 const MAX_CHUNK_BYTES=23_500;
 const RELEASE_ID=keccak256(stringToHex('INDEXIO_V3_3_6_HARDENED_RC'));
 const FACTORY_READ=parseAbi(['function validateComposition(address[] assets,uint16[] weights)','function isVault(address) view returns (bool)']);
 const DEPLOY_EVENT_ABI=[{type:'event',name:'VaultDeployed',anonymous:false,inputs:[{indexed:true,name:'factory',type:'address'},{indexed:true,name:'creator',type:'address'},{indexed:true,name:'vault',type:'address'},{indexed:false,name:'shareToken',type:'address'},{indexed:false,name:'incomeHub',type:'address'},{indexed:false,name:'governor',type:'address'},{indexed:false,name:'distributionBps',type:'uint16'},{indexed:false,name:'initialSharePriceUsd18',type:'uint256'}]}] as const;
 type VerifyState='idle'|'pending'|'verified'|'error';
-type Suite={owner:string;treasury:string;addresses:Record<string,Address>;bindings:Record<string,boolean>;verification:Record<string,VerifyState>;verificationGuids:Record<string,string>;transactions:Record<string,Hex>;deploymentBlocks:Record<string,string>;candidates:Record<string,Address>};
+type Suite={owner:string;treasury:string;addresses:Record<string,Address>;bindings:Record<string,boolean>;verification:Record<string,VerifyState>;verificationGuids:Record<string,string>;transactions:Record<string,Hex>;deploymentBlocks:Record<string,string>;candidates:Record<string,Address>;timelocks:Record<string,string>};
 type VerifyTarget={key:string;label:string;kind:string;address?:Address;constructorArguments:Hex};
-const emptySuite:Suite={owner:'',treasury:'',addresses:{},bindings:{},verification:{},verificationGuids:{},transactions:{},deploymentBlocks:{},candidates:{}};
+const emptySuite:Suite={owner:'',treasury:'',addresses:{},bindings:{},verification:{},verificationGuids:{},transactions:{},deploymentBlocks:{},candidates:{},timelocks:{}};
 const short=(x:string)=>x?`${x.slice(0,7)}…${x.slice(-5)}`:'Not set';
 
 export function IndexioV34Deployer(){
@@ -54,7 +61,7 @@ export function IndexioV34Deployer(){
  const [vaultConstructorArguments,setVaultConstructorArguments]=useState<Hex>('0x');
  const [vaultVerification,setVaultVerification]=useState<VerifyState>('idle');
 
- useEffect(()=>{try{const raw=localStorage.getItem(KEY);if(raw){const saved=JSON.parse(raw);const oldBindings=saved.bindings||{};setSuite({...emptySuite,...saved,addresses:saved.addresses||{},bindings:{...oldBindings,safety:Boolean(oldBindings.safety||oldBindings.safetyBind),deployer:Boolean(oldBindings.deployer||oldBindings.deployerBind),zeroX:Boolean(oldBindings.zeroX||oldBindings.wireZeroX),lifi:Boolean(oldBindings.lifi||oldBindings.wireLifi)},verification:saved.verification||{},verificationGuids:saved.verificationGuids||{},transactions:saved.transactions||{},deploymentBlocks:saved.deploymentBlocks||{},candidates:saved.candidates||{}})}}catch{}finally{setReady(true)}},[]);
+ useEffect(()=>{try{const raw=localStorage.getItem(KEY);if(raw){const saved=JSON.parse(raw);const oldBindings=saved.bindings||{};setSuite({...emptySuite,...saved,addresses:saved.addresses||{},bindings:{...oldBindings,safety:Boolean(oldBindings.safety||oldBindings.safetyBind),deployer:Boolean(oldBindings.deployer||oldBindings.deployerBind),zeroX:Boolean(oldBindings.zeroX||oldBindings.wireZeroX),lifi:Boolean(oldBindings.lifi||oldBindings.wireLifi)},verification:saved.verification||{},verificationGuids:saved.verificationGuids||{},transactions:saved.transactions||{},deploymentBlocks:saved.deploymentBlocks||{},candidates:saved.candidates||{},timelocks:saved.timelocks||{}})}}catch{}finally{setReady(true)}},[]);
  useEffect(()=>{if(ready){try{localStorage.setItem(KEY,JSON.stringify(suite))}catch{}}},[ready,suite]);
  useEffect(()=>{if(address){setSuite(s=>({...s,owner:s.owner||address,treasury:s.treasury||address}))}},[address]);
  const owner=useMemo(()=>isAddress(suite.owner)?getAddress(suite.owner):null,[suite.owner]);
@@ -74,10 +81,13 @@ export function IndexioV34Deployer(){
   if(owner&&a.executionRouter&&a.factory)targets.push({key:'executionRouter',label:'Execution Router',kind:'executionRouter',address:a.executionRouter,constructorArguments:encode([{type:'address'},{type:'address'}],[owner,a.factory])});
   if(a.zeroXAdapter&&a.executionRouter)targets.push({key:'zeroXAdapter',label:'0x Restricted Adapter',kind:'restrictedSwapAdapter',address:a.zeroXAdapter,constructorArguments:encode([{type:'address'}],[a.executionRouter])});
   if(owner&&a.lifiAdapter&&a.executionRouter)targets.push({key:'lifiAdapter',label:'LI.FI Restricted Adapter',kind:'lifiSwapAdapter',address:a.lifiAdapter,constructorArguments:encode([{type:'address'},{type:'address'}],[owner,a.executionRouter])});
+  if(owner&&a.adaptiveRouter&&a.factory)targets.push({key:'adaptiveRouter',label:'V3.4.2 Adaptive Buy Router',kind:'adaptiveBuyRouter',address:a.adaptiveRouter,constructorArguments:encode([{type:'address'},{type:'address'}],[owner,a.factory])});
+  if(a.adaptiveZeroXAdapter&&a.adaptiveRouter)targets.push({key:'adaptiveZeroXAdapter',label:'Adaptive 0x Adapter',kind:'adaptiveBuyZeroX',address:a.adaptiveZeroXAdapter,constructorArguments:encode([{type:'address'}],[a.adaptiveRouter])});
+  if(owner&&a.adaptiveLifiAdapter&&a.adaptiveRouter)targets.push({key:'adaptiveLifiAdapter',label:'Adaptive LI.FI Adapter',kind:'adaptiveBuyLifi',address:a.adaptiveLifiAdapter,constructorArguments:encode([{type:'address'},{type:'address'}],[owner,a.adaptiveRouter])});
   return targets;
  },[suite.addresses,owner,treasury,codeParts,blobLengths]);
  const integrationData=useMemo(()=>({
-  release:'INDEXIO_V3_4_GOVERNANCE_DEPLOYMENT',uiVersion:'3.4',contractRelease:'3.3.6 Hardened RC router + V3.4 governor',releaseId:RELEASE_ID,
+  release:'INDEXIO_V3_4_2_ADAPTIVE_DEPLOYMENT',uiVersion:'3.4.2',contractRelease:'3.3.6 Hardened RC router + V3.4 governor',releaseId:RELEASE_ID,
   network:'Base Mainnet',chainId:8453,explorer:EXPLORER,
   protocolOwner:owner||suite.owner||null,feeTreasury:treasury||suite.treasury||null,planApprover:owner||suite.owner||null,
   assetRegistry:REGISTRY,settlementToken:USDC,
@@ -85,6 +95,8 @@ export function IndexioV34Deployer(){
   vaultCode:{creationCodeHash:indexioV34VaultCreationCodeHash,creationCodeLength:indexioV34VaultCreationCodeLength,segmentA:suite.addresses.codeBlobA||null,segmentALength:blobLengths[0],segmentB:suite.addresses.codeBlobB||null,segmentBLength:blobLengths[1]},
   vaultDeployer:suite.addresses.vaultDeployer||null,factory:suite.addresses.factory||null,executionRouter:suite.addresses.executionRouter||null,
   adapters:{zeroX:suite.addresses.zeroXAdapter||null,lifi:suite.addresses.lifiAdapter||null},
+  adaptiveBuy:{router:suite.addresses.adaptiveRouter||null,zeroXAdapter:suite.addresses.adaptiveZeroXAdapter||null,lifiAdapter:suite.addresses.adaptiveLifiAdapter||null,zeroXApproved:!!suite.bindings.adaptiveZeroX,lifiApproved:!!suite.bindings.adaptiveLifi,verifiedReady:!!suite.bindings.adaptiveZeroX&&!!suite.bindings.adaptiveLifi,warning:'Only supports fresh V3.4.2 vaults after live route/simulation tests'},
+  artifactLinks:{suite:'/indexio-v342-suite-artifacts.json',adaptive:'/indexio-v342-adaptive-artifacts.json',sizeReport:'/indexio-v342-size-report.json'},
   governance:{release:'INDEXIO_V3_4_1_UNANIMOUS_FAST_TRACK',votePeriodDays:3,rebalanceExitDays:1,compositionExitDays:3,planValidityMinutes:20,planApproval:'Factory owner (recommend Safe multisig)',note:'Approve fresh exact plan hash after the exit period; do not treat quoted output as independent fair price'},
   protocol:{protocolFeeBps:100,maxCreatorFeeBps:100,maxCreatorIncomeRewardBps:2000,minGrossSeedUsdc:'25',assetWeightTotalBps:10000,maxAssetsPerIndex:20},
   appCalls:{createVault:'deploy(string,string,address[],uint16[],uint16,uint16,uint16,uint256)',seedIndex:'seedIndex(address,uint256,(address,uint256,uint256,uint256,bytes)[],address,uint256)',factoryDiscovery:'vaultCount() / allVaults(uint256)',vaultCreatedEvent:'VaultDeployed(address,address,address,address,address,address,uint16,uint256)'},
@@ -112,6 +124,10 @@ Factory Deployment Transaction: ${suite.transactions.factory||''}
 Execution Router: ${suite.addresses.executionRouter||''}
 0x Restricted Adapter: ${suite.addresses.zeroXAdapter||''}
 LI.FI Restricted Adapter: ${suite.addresses.lifiAdapter||''}
+Adaptive Buy Router: ${suite.addresses.adaptiveRouter||''}
+Adaptive 0x Adapter: ${suite.addresses.adaptiveZeroXAdapter||''}
+Adaptive LI.FI Adapter: ${suite.addresses.adaptiveLifiAdapter||''}
+Adaptive Adapters Active: ${suite.bindings.adaptiveZeroX&&suite.bindings.adaptiveLifi?'YES':'NO'}
 Router / Adapter Release ID: ${RELEASE_ID}\nNew governor release: INDEXIO_V3_4_1_UNANIMOUS_FAST_TRACK
 
 Minimum Seed: 25 USDC
@@ -139,19 +155,35 @@ LI.FI Adapter Approved: ${suite.bindings.lifi?'YES':'NO'}
    if(!owner)throw Error('Enter a valid protocol owner address first.');
    setBusy(key);setError('');setErrorStep('');setNotice('');
    let submittedHash:Hex|undefined;
-   try{const wallet=await activeWallet();const hash=await (wallet.deployContract as any)({abi,bytecode,args,account:wallet.account||getAddress(address!)});submittedHash=hash;setSuite(s=>({...s,transactions:{...s.transactions,[key]:hash}}));setNotice(`${label} submitted. Waiting for Base confirmation…`);const receipt=await pc!.waitForTransactionReceipt({hash,timeout:120_000,pollingInterval:3_000});if(receipt.status!=='success'||!receipt.contractAddress)throw Error(`${label} deployment reverted.`);const deployed=getAddress(receipt.contractAddress);setSuite(s=>({...s,addresses:{...s.addresses,[key]:deployed},transactions:{...s.transactions,[key]:hash},deploymentBlocks:{...s.deploymentBlocks,[key]:receipt.blockNumber.toString()}}));setNotice(`${label} deployed and confirmed on Base.`);return deployed}catch(e:any){const message=e?.shortMessage||e?.message||String(e);setErrorStep(key);setError(submittedHash&&!message.toLowerCase().includes('revert')?`${label} was submitted as ${submittedHash}, but confirmation is taking longer than expected. Do not submit another deployment. Use Refresh and find next step.`:message);return null}finally{setBusy('')}
+   try{
+    const wallet=await activeWallet();
+    const account=wallet.account||getAddress(address!);
+    const initData=encodeDeployData({abi,bytecode,args} as any);
+    const initBytes=(initData.length-2)/2;
+    if(initBytes>MAX_INIT_CODE_BYTES)throw Error(`${label} constructor transaction would exceed the ${MAX_INIT_CODE_BYTES.toLocaleString()}-byte EIP-3860 init-code limit (${initBytes.toLocaleString()} bytes). No wallet transaction was opened.`);
+    if(bytecode==='0x')throw Error(`Missing compiled bytecode for ${label}. Rebuild the deployer to generate V3.4.2 artifacts.`);
+    try { await pc!.estimateGas({account:typeof account==='string'?account:account.address,data:initData}); }
+    catch(e:any){throw Error(`${label} failed the live Base deployment gas preflight. No wallet transaction was opened. ${e?.shortMessage||e?.message||String(e)}`);}
+    const hash=await (wallet.deployContract as any)({abi,bytecode,args,account});submittedHash=hash;setSuite(s=>({...s,transactions:{...s.transactions,[key]:hash}}));setNotice(`${label} submitted. Waiting for Base confirmation…`);const receipt=await pc!.waitForTransactionReceipt({hash,timeout:120_000,pollingInterval:3_000});if(receipt.status!=='success'||!receipt.contractAddress)throw Error(`${label} deployment reverted.`);const deployed=getAddress(receipt.contractAddress);setSuite(s=>({...s,addresses:{...s.addresses,[key]:deployed},transactions:{...s.transactions,[key]:hash},deploymentBlocks:{...s.deploymentBlocks,[key]:receipt.blockNumber.toString()}}));setNotice(`${label} deployed and confirmed on Base.`);return deployed}catch(e:any){const message=e?.shortMessage||e?.message||String(e);setErrorStep(key);setError(submittedHash&&!message.toLowerCase().includes('revert')?`${label} was submitted as ${submittedHash}, but confirmation is taking longer than expected. Do not submit another deployment. Use Refresh and find next step.`:message);return null}finally{setBusy('')}
  }
  async function write(key:string,bindingKey:string,label:string,to:Address,abi:any,functionName:string,args:any[]){
    if(!await ensureBase())return;
    setBusy(key);setError('');setErrorStep('');setNotice('');
-   try{const wallet=await activeWallet();const hash=await (wallet.writeContract as any)({address:to,abi,functionName,args,account:wallet.account||getAddress(address!)});setSuite(s=>({...s,transactions:{...s.transactions,[key]:hash}}));const receipt=await pc!.waitForTransactionReceipt({hash});if(receipt.status!=='success')throw Error(`${label} transaction reverted.`);setSuite(s=>({...s,bindings:{...s.bindings,[bindingKey]:true},transactions:{...s.transactions,[key]:hash},deploymentBlocks:{...s.deploymentBlocks,[key]:receipt.blockNumber.toString()}}));setNotice(`${label} confirmed on Base.`)}catch(e:any){setErrorStep(key);setError(e?.shortMessage||e?.message||String(e))}finally{setBusy('')}
+   try{
+    const wallet=await activeWallet(); const account=wallet.account||getAddress(address!);
+    try {
+      const simulation={address:to,abi,functionName,args,account:typeof account==='string'?account:account.address};
+      await (pc!.simulateContract as any)(simulation);
+      await (pc!.estimateContractGas as any)(simulation);
+    } catch(e:any){throw Error(`${label} failed the Base simulation/gas preflight. No wallet transaction was opened. ${e?.shortMessage||e?.message||String(e)}`);}
+    const hash=await (wallet.writeContract as any)({address:to,abi,functionName,args,account});setSuite(s=>({...s,transactions:{...s.transactions,[key]:hash}}));const receipt=await pc!.waitForTransactionReceipt({hash});if(receipt.status!=='success')throw Error(`${label} transaction reverted.`);setSuite(s=>({...s,bindings:{...s.bindings,[bindingKey]:true},transactions:{...s.transactions,[key]:hash},deploymentBlocks:{...s.deploymentBlocks,[key]:receipt.blockNumber.toString()}}));setNotice(`${label} confirmed on Base.`)}catch(e:any){setErrorStep(key);setError(e?.shortMessage||e?.message||String(e))}finally{setBusy('')}
  }
  async function refreshDeploymentStatus(scrollToNext=true){
    if(!pc)return setError('Base connection is still initializing. Try refresh again in a moment.');
    setBusy('refresh');setError('');setNotice('Checking the saved addresses and transactions directly on Base…');
    try{
-    const next:Suite={...suite,addresses:{...suite.addresses},bindings:{...suite.bindings},transactions:{...suite.transactions},deploymentBlocks:{...suite.deploymentBlocks},candidates:{...suite.candidates},verification:{...suite.verification},verificationGuids:{...suite.verificationGuids}};
-    const deploymentKeys=['safety','transferPolicy','codeBlobA','codeBlobB','vaultDeployer','factory','executionRouter','zeroXAdapter','lifiAdapter'];
+    const next:Suite={...suite,addresses:{...suite.addresses},bindings:{...suite.bindings},transactions:{...suite.transactions},deploymentBlocks:{...suite.deploymentBlocks},candidates:{...suite.candidates},timelocks:{...suite.timelocks},verification:{...suite.verification},verificationGuids:{...suite.verificationGuids}};
+    const deploymentKeys=['safety','transferPolicy','codeBlobA','codeBlobB','vaultDeployer','factory','executionRouter','zeroXAdapter','lifiAdapter','adaptiveRouter','adaptiveZeroXAdapter','adaptiveLifiAdapter'];
     for(const key of deploymentKeys){
      const hash=next.transactions[key];
      if(hash&&!next.addresses[key]){try{const receipt=await pc.getTransactionReceipt({hash});if(receipt.status==='success'&&receipt.contractAddress){next.addresses[key]=getAddress(receipt.contractAddress);next.deploymentBlocks[key]=receipt.blockNumber.toString()}}catch{}}
@@ -166,13 +198,35 @@ LI.FI Adapter Approved: ${suite.bindings.lifi?'YES':'NO'}
     if(next.addresses.executionRouter&&next.addresses.zeroXAdapter){try{next.bindings.zeroX=Boolean(await pc.readContract({address:next.addresses.executionRouter,abi:indexioV34ExecutionRouterAbi,functionName:'approvedAdapter',args:[next.addresses.zeroXAdapter]}))}catch{}}
     if(next.addresses.executionRouter&&next.addresses.lifiAdapter){try{next.bindings.lifi=Boolean(await pc.readContract({address:next.addresses.executionRouter,abi:indexioV34ExecutionRouterAbi,functionName:'approvedAdapter',args:[next.addresses.lifiAdapter]}))}catch{}}
     if(next.addresses.factory&&next.addresses.executionRouter){try{const [locked,router]=await Promise.all([pc.readContract({address:next.addresses.factory,abi:indexioV34FactoryAbi,functionName:'executionRouterLocked'}),pc.readContract({address:next.addresses.factory,abi:indexioV34FactoryAbi,functionName:'executionRouter'})]);next.bindings.factoryRouter=Boolean(locked)&&String(router).toLowerCase()===next.addresses.executionRouter.toLowerCase()}catch{}}
+    if(next.addresses.adaptiveRouter){
+      for(const [key,adapter] of [['adaptiveZeroX',next.addresses.adaptiveZeroXAdapter],['adaptiveLifi',next.addresses.adaptiveLifiAdapter]] as const){
+        if(!adapter)continue;
+        try {
+          const [approved,eta]=await Promise.all([
+            pc.readContract({address:next.addresses.adaptiveRouter,abi:v342AdaptiveRouterAbi,functionName:'approvedAdapter',args:[adapter]}),
+            pc.readContract({address:next.addresses.adaptiveRouter,abi:v342AdaptiveRouterAbi,functionName:'pendingAdapterValidAt',args:[adapter]})]);
+          const boundRouter=await pc.readContract({address:adapter,abi:key==='adaptiveZeroX'?v342AdaptiveZeroXAbi:v342AdaptiveLifiAbi,functionName:'callerRouter'});
+          const releaseId=await pc.readContract({address:adapter,abi:key==='adaptiveZeroX'?v342AdaptiveZeroXAbi:v342AdaptiveLifiAbi,functionName:'RELEASE_ID'});
+          if(String(boundRouter).toLowerCase()!==next.addresses.adaptiveRouter.toLowerCase()||String(releaseId).toLowerCase()!==RELEASE_ID.toLowerCase()){
+            next.bindings[key]=false;
+            throw Error(`Adaptive adapter ${key} is not bound to the expected router/release. Do not activate it.`);
+          }
+          next.bindings[key]=Boolean(approved);
+          next.bindings[key==='adaptiveZeroX'?'adaptiveProposedZeroX':'adaptiveProposedLifi']=Boolean(approved)||BigInt(eta)>0n;
+          next.timelocks[key]=String(eta);
+        } catch {}
+      }
+    }
     setSuite(next);
     const progress=[
      ['safety',Boolean(next.addresses.safety)],['transferPolicy',Boolean(next.addresses.transferPolicy)],['code',Boolean(next.addresses.codeBlobA&&next.addresses.codeBlobB)],['vaultDeployer',Boolean(next.addresses.vaultDeployer)],['factory',Boolean(next.addresses.factory)],['safetyBind',Boolean(next.bindings.safety)],['deployerBind',Boolean(next.bindings.deployer)],['executionRouter',Boolean(next.addresses.executionRouter)],['zeroXAdapter',Boolean(next.addresses.zeroXAdapter)],['lifiAdapter',Boolean(next.addresses.lifiAdapter)],['wireZeroX',Boolean(next.bindings.zeroX)],['wireLifi',Boolean(next.bindings.lifi)],['factoryRouter',Boolean(next.bindings.factoryRouter)]
     ] as const;
     const unfinished=progress.find(([,done])=>!done);
-    setNotice(unfinished?'Base status refreshed. The next unfinished step is highlighted below.':'Base status refreshed. Every deployment and wiring step is confirmed.');
-    if(scrollToNext&&unfinished)setTimeout(()=>document.getElementById(`deploy-step-${unfinished[0]}`)?.scrollIntoView({behavior:'smooth',block:'center'}),80);
+    const nextAdaptive = ['adaptiveRouter','adaptiveZeroXAdapter','adaptiveLifiAdapter'].find(key=>!next.addresses[key]) ||
+      ['adaptiveProposedZeroX','adaptiveProposedLifi','adaptiveZeroX','adaptiveLifi'].find(key=>!next.bindings[key]);
+    const nextAdaptiveKey:Record<string,string>={adaptiveProposedZeroX:'adaptiveProposeZeroX',adaptiveProposedLifi:'adaptiveProposeLifi',adaptiveZeroX:'adaptiveActivateZeroX',adaptiveLifi:'adaptiveActivateLifi'};
+    setNotice(unfinished?'Base status refreshed. The next unfinished step is highlighted below.':nextAdaptive?'Main suite confirmed. Finish the V3.4.2 adaptive buy steps below.':'All 20 deployment/wiring actions appear confirmed. Run live trade and governance tests before funding.');
+    if(scrollToNext){const nextKey=unfinished?.[0]||nextAdaptiveKey[nextAdaptive||'']||nextAdaptive; if(nextKey)setTimeout(()=>document.getElementById(`deploy-step-${nextKey}`)?.scrollIntoView({behavior:'smooth',block:'center'}),80);}
    }catch(e:any){setError(e?.shortMessage||e?.message||String(e))}finally{setBusy('')}
  }
  async function deployCodeBlob(index:number){
@@ -189,11 +243,17 @@ LI.FI Adapter Approved: ${suite.bindings.lifi?'YES':'NO'}
  async function deployFactory(){if(!suite.addresses.safety||!suite.addresses.transferPolicy||!suite.addresses.vaultDeployer||!treasury)return setError('Set owner and treasury, then deploy Safety, Transfer Policy and Vault Deployer first.');await deployContract('factory','Indexio V3.4 Factory',indexioV34FactoryAbi,indexioV34FactoryBytecode,[owner,REGISTRY,USDC,treasury,suite.addresses.safety,suite.addresses.vaultDeployer,suite.addresses.transferPolicy]);}
  async function deployRouter(){if(!suite.addresses.factory)return setError('Deploy the Factory first.');await deployContract('executionRouter','Execution Router',indexioV34ExecutionRouterAbi,indexioV34ExecutionRouterBytecode,[owner,suite.addresses.factory]);}
  async function deployAdapter(key:string){if(!suite.addresses.executionRouter)return setError('Deploy the Execution Router first.');if(key==='zeroXAdapter')await deployContract(key,'0x Restricted Adapter',indexioV34RestrictedSwapAdapterAbi,indexioV34RestrictedSwapAdapterBytecode,[suite.addresses.executionRouter]);else await deployContract(key,'LI.FI Restricted Adapter',indexioV34LifiSwapAdapterAbi,indexioV34LifiSwapAdapterBytecode,[owner,suite.addresses.executionRouter]);}
+ async function deployAdaptiveAdapter(key:'adaptiveZeroXAdapter'|'adaptiveLifiAdapter'){
+   if(!suite.addresses.adaptiveRouter)return setError('Deploy the V3.4.2 adaptive router first.');
+   if(key==='adaptiveZeroXAdapter')await deployContract(key,'Adaptive 0x Adapter',v342AdaptiveZeroXAbi,v342AdaptiveZeroXBytecode,[suite.addresses.adaptiveRouter]);
+   else await deployContract(key,'Adaptive LI.FI Adapter',v342AdaptiveLifiAbi,v342AdaptiveLifiBytecode,[owner,suite.addresses.adaptiveRouter]);
+ }
  async function createIndex(){
    if(!await ensureBase())return;
    setBusy('create');setError('');setNotice('');
    try{
      if(!suite.addresses.factory||!suite.addresses.vaultDeployer||!suite.bindings.factoryRouter)throw Error('Finish and confirm the suite wiring before creating an index.');
+     if(!suite.bindings.adaptiveZeroX||!suite.bindings.adaptiveLifi)throw Error('Finish the V3.4.2 adaptive adapter approvals before funding new indexes.');
      if(!name.trim()||!symbol.trim())throw Error('Add an index name and share symbol.');
      if(assetRows.some(x=>!isAddress(x.asset)))throw Error('Enter a valid Base token address for every asset.');
      const assets=assetRows.map(x=>getAddress(x.asset));const weights=assetRows.map(x=>Number(x.weight));
@@ -201,11 +261,21 @@ LI.FI Adapter Approved: ${suite.bindings.lifi?'YES':'NO'}
      if(weights.some(x=>!Number.isInteger(x)||x<1||x>10000)||weights.reduce((a,b)=>a+b,0)!==10000)throw Error('Weights must be whole basis points totaling 10,000.');
      const cfee=Number(creatorFee),rew=Number(reward),dist=Number(distribution);if(!Number.isInteger(cfee)||cfee<0||cfee>100||!Number.isInteger(rew)||rew<0||rew>2000||!Number.isInteger(dist)||dist<0||dist>10000)throw Error('Creator fee: 0–100 bps; reward: 0–2,000 bps; payout: 0–10,000 bps.');
      await (pc!.readContract as any)({address:suite.addresses.factory,abi:FACTORY_READ,functionName:'validateComposition',args:[assets,weights]});
-     const wallet=await activeWallet();const walletAccount=wallet.account||getAddress(address!);const hash=await (wallet.writeContract as any)({address:suite.addresses.vaultDeployer,abi:indexioV34VaultDeployerAbi,functionName:'deploy',args:[name.trim(),symbol.trim(),assets,weights,cfee,rew,dist,1000000000000000000n],account:walletAccount});
+     const wallet=await activeWallet();const walletAccount=wallet.account||getAddress(address!);
+     const creator=typeof walletAccount==='string'?walletAccount:walletAccount.address;
+     const args=[name.trim(),symbol.trim(),assets,weights,cfee,rew,dist,1000000000000000000n] as const;
+     const ctor=encodeAbiParameters([{type:'address'},{type:'address'},{type:'string'},{type:'string'},{type:'address[]'},{type:'uint16[]'},{type:'uint16'},{type:'uint16'},{type:'uint16'},{type:'uint256'}] as const,[suite.addresses.factory,creator,name.trim(),symbol.trim(),assets,weights,cfee,rew,dist,1000000000000000000n]);
+     const internalInitBytes=indexioV34VaultCreationCodeLength+(ctor.length-2)/2;
+     if(internalInitBytes>MAX_INIT_CODE_BYTES)throw Error(`Vault creation would exceed Base's ${MAX_INIT_CODE_BYTES.toLocaleString()}-byte EIP-3860 limit (${internalInitBytes.toLocaleString()} bytes including constructor arguments). Shorten the name/symbol or lower the number of assets. No transaction was opened.`);
+     try {
+       await (pc!.simulateContract as any)({address:suite.addresses.vaultDeployer,abi:indexioV34VaultDeployerAbi,functionName:'deploy',args,account:creator});
+       await (pc!.estimateContractGas as any)({address:suite.addresses.vaultDeployer,abi:indexioV34VaultDeployerAbi,functionName:'deploy',args,account:creator});
+     } catch(e:any) { throw Error(`New index creation failed Base simulation or gas estimation. No wallet transaction was opened. ${e?.shortMessage||e?.message||String(e)}`); }
+     const hash=await (wallet.writeContract as any)({address:suite.addresses.vaultDeployer,abi:indexioV34VaultDeployerAbi,functionName:'deploy',args,account:walletAccount});
      setNotice('Vault submitted. Waiting for Base confirmation…');const receipt=await pc!.waitForTransactionReceipt({hash});if(receipt.status!=='success')throw Error('Vault creation transaction reverted.');
      let found='';for(const log of receipt.logs){try{const event=decodeEventLog({abi:DEPLOY_EVENT_ABI,data:log.data,topics:log.topics});if(event.eventName==='VaultDeployed'){found=String(event.args.vault);break}}catch{}}
      if(!found)throw Error('Transaction confirmed, but the VaultDeployed event could not be decoded. Check the transaction on BaseScan before retrying.');
-     const deployed=getAddress(found);const creator=getAddress(walletAccount.address);const vaultCtor=encodeAbiParameters([{type:'address'},{type:'address'},{type:'string'},{type:'string'},{type:'address[]'},{type:'uint16[]'},{type:'uint16'},{type:'uint16'},{type:'uint16'},{type:'uint256'}],[suite.addresses.factory,creator,name.trim(),symbol.trim(),assets,weights,cfee,rew,dist,1000000000000000000n]);setVaultConstructorArguments(vaultCtor);setVaultVerification('idle');setVault(deployed);setTab('create');setNotice('Index created. Continue to the 25 USDC seed step.');
+     const deployed=getAddress(found);const verifiedCreator=getAddress(creator);const vaultCtor=encodeAbiParameters([{type:'address'},{type:'address'},{type:'string'},{type:'string'},{type:'address[]'},{type:'uint16[]'},{type:'uint16'},{type:'uint16'},{type:'uint16'},{type:'uint256'}],[suite.addresses.factory,verifiedCreator,name.trim(),symbol.trim(),assets,weights,cfee,rew,dist,1000000000000000000n]);setVaultConstructorArguments(vaultCtor);setVaultVerification('idle');setVault(deployed);setTab('create');setNotice('Index created. Continue to the 25 USDC seed step.');
    }catch(e:any){setError(e?.shortMessage||e?.message||String(e))}finally{setBusy('')}
  }
  function addAsset(){setAssetRows(r=>[...r,{asset:'',weight:''}])}
@@ -225,6 +295,16 @@ LI.FI Adapter Approved: ${suite.bindings.lifi?'YES':'NO'}
   ['wireLifi','12 · Approve LI.FI adapter',()=>write('wireLifi','lifi','LI.FI adapter approval',suite.addresses.executionRouter,indexioV34ExecutionRouterAbi,'setAdapter',[suite.addresses.lifiAdapter,true]),!!suite.bindings.lifi],
   ['factoryRouter','13 · Lock Factory to Execution Router',()=>write('factoryRouter','factoryRouter','Factory → Execution Router lock',suite.addresses.factory,indexioV34FactoryAbi,'setExecutionRouterOnce',[suite.addresses.executionRouter]),!!suite.bindings.factoryRouter],
  ];
+ const adaptiveReady=Boolean(suite.bindings.adaptiveZeroX&&suite.bindings.adaptiveLifi);
+ const adaptiveRows=[
+  ['adaptiveRouter','14 · V3.4.2 Adaptive Buy Router',()=>deployContract('adaptiveRouter','V3.4.2 Adaptive Buy Router',v342AdaptiveRouterAbi,v342AdaptiveRouterBytecode,[owner,suite.addresses.factory]),!!suite.addresses.adaptiveRouter],
+  ['adaptiveZeroXAdapter','15 · Dedicated Adaptive 0x Adapter',()=>deployAdaptiveAdapter('adaptiveZeroXAdapter'),!!suite.addresses.adaptiveZeroXAdapter],
+  ['adaptiveLifiAdapter','16 · Dedicated Adaptive LI.FI Adapter',()=>deployAdaptiveAdapter('adaptiveLifiAdapter'),!!suite.addresses.adaptiveLifiAdapter],
+  ['adaptiveProposeZeroX','17 · Propose Adaptive 0x Adapter',()=>write('adaptiveProposeZeroX','adaptiveProposedZeroX','Propose adaptive 0x adapter',suite.addresses.adaptiveRouter,v342AdaptiveRouterAbi,'proposeAdapter',[suite.addresses.adaptiveZeroXAdapter]),!!suite.bindings.adaptiveProposedZeroX||!!suite.bindings.adaptiveZeroX],
+  ['adaptiveProposeLifi','18 · Propose Adaptive LI.FI Adapter',()=>write('adaptiveProposeLifi','adaptiveProposedLifi','Propose adaptive LI.FI adapter',suite.addresses.adaptiveRouter,v342AdaptiveRouterAbi,'proposeAdapter',[suite.addresses.adaptiveLifiAdapter]),!!suite.bindings.adaptiveProposedLifi||!!suite.bindings.adaptiveLifi],
+  ['adaptiveActivateZeroX','19 · Activate Adaptive 0x (after 6h)',()=>write('adaptiveActivateZeroX','adaptiveZeroX','Activate adaptive 0x adapter',suite.addresses.adaptiveRouter,v342AdaptiveRouterAbi,'activateAdapter',[suite.addresses.adaptiveZeroXAdapter]),!!suite.bindings.adaptiveZeroX],
+  ['adaptiveActivateLifi','20 · Activate Adaptive LI.FI (after 6h)',()=>write('adaptiveActivateLifi','adaptiveLifi','Activate adaptive LI.FI adapter',suite.addresses.adaptiveRouter,v342AdaptiveRouterAbi,'activateAdapter',[suite.addresses.adaptiveLifiAdapter]),!!suite.bindings.adaptiveLifi],
+ ] as const;
  const url=(a:string)=>`${EXPLORER}/address/${a}`;
 
  return <main className="shell">
@@ -240,13 +320,26 @@ LI.FI Adapter Approved: ${suite.bindings.lifi?'YES':'NO'}
    <section className="card"><div className="stepHead"><div className="stepNo">SETUP</div><div><h2>Deployment record</h2><p>Saved on this device as you go. Each deployment and wiring action is a separate wallet confirmation, so you can resume after a refresh.</p></div></div>
     <label className="field">Protocol owner<input value={suite.owner} onChange={e=>setSuite(s=>({...s,owner:e.target.value}))} placeholder="0x…"/></label><label className="field">Fee treasury<input value={suite.treasury} onChange={e=>setSuite(s=>({...s,treasury:e.target.value}))} placeholder="0x…"/></label><div className="notice">USDC is fixed to Base USDC. Registry is fixed to the existing Indexio Asset Registry. Verify both addresses before deploying.</div><button className="secondary" style={{marginTop:12}} disabled={!!busy||!pc} onClick={()=>refreshDeploymentStatus(true)}>{busy==='refresh'?'Checking Base…':'Refresh all deployment statuses'}</button>
    </section>
+   <section className="card"><div className="stepHead"><div className="stepNo">ART</div><div><h2>Download verified-source compilation artifacts</h2><p>Generated automatically during this site's build from the V3.4.2 Solidity sources. Compiler: <code>{indexioV34CompilerVersion}</code>. These files are artifacts, not proof of successful transactions.</p></div></div>
+    <div className="details"><div><span>Vault creation bytes</span><strong>{indexioV34VaultCreationCodeLength.toLocaleString()} / 46,000 budget</strong></div><div><span>Vault runtime bytes</span><strong>{indexioV34BytecodeSizes.vault.runtimeBytes.toLocaleString()} / {MAX_RUNTIME_BYTES.toLocaleString()}</strong></div><div><span>Vault code hash</span><code>{indexioV34VaultCreationCodeHash}</code></div><div><span>Adaptive router</span><code>{suite.addresses.adaptiveRouter||'Not deployed'}</code></div></div>
+    <a className="linkButton" href="/indexio-v342-suite-artifacts.json" download="indexio-v342-suite-artifacts.json">Download V3.4.2 suite ABIs + bytecodes</a>
+    <a className="linkButton" style={{marginTop:8}} href="/indexio-v342-adaptive-artifacts.json" download="indexio-v342-adaptive-artifacts.json">Download dedicated adaptive router + adapters</a>
+    <a className="linkButton" style={{marginTop:8}} href="/indexio-v342-size-report.json" download="indexio-v342-size-report.json">Download bytecode-size report</a>
+    <div className="notice" style={{marginTop:10}}>Deployment checks: Base chain, constructor init-code size, live gas estimate, exact vault bytecode hash and immutable code segments. Creating a vault additionally checks its entire internal init code and simulates the call before signing.</div>
+   </section>
    {rows.map(([key,label,action,done],i)=>{const blocked=(i>0&&!rows.slice(0,i).every(r=>r[3] as boolean))||!owner||!treasury;const isBlob=key==='code';return <section className="card" id={`deploy-step-${String(key)}`} key={String(key)}><div className="stepHead"><div className="stepNo">{String(i+1).padStart(2,'0')}</div><div><h2>{label as string}</h2><p>{done?'Confirmed on Base and recorded on this device.':isBlob?`Two small one-time storage deployments; each segment is at most ${MAX_CHUNK_BYTES.toLocaleString()} bytes.`:'Continue one confirmed Base transaction at a time.'}</p></div></div>{key==='factory'&&<div className="candidate">Factory is new and its router binding is one-time. Existing vaults and their governors cannot be replaced. Use new contracts only after audit and a fork end-to-end governance test.</div>}{key==='code'&&<div className="details"><div><span>Segment A</span><code>{suite.addresses.codeBlobA||'Not deployed'}</code></div><div><span>Segment B</span><code>{suite.addresses.codeBlobB||'Not deployed'}</code></div></div>}{done&&suite.addresses[String(key)]&&<a className="linkButton" href={url(suite.addresses[String(key)])} target="_blank" rel="noreferrer">View on BaseScan ↗</a>}{!done&&<button className="primary deploy" disabled={blocked||!!busy} onClick={()=>{setError('');setErrorStep('');(action as ()=>Promise<void>)().catch((e:any)=>{setErrorStep(String(key));setError(e?.message||String(e))})}}>{busy===key?`Waiting for ${label as string}…`:busy?'Another transaction is pending':`Continue: ${label as string}`}</button>}{errorStep===String(key)&&error&&<div role="alert" className="notice danger" style={{marginTop:10}}>{error}</div>}<button className="ghost compact" style={{marginTop:10}} disabled={!!busy||!pc} onClick={()=>refreshDeploymentStatus(true)}>{busy==='refresh'?'Checking Base…':'Refresh and find next step'}</button></section>})}
+   <section className="card"><div className="stepHead"><div className="stepNo">BUY</div><div><h2>Adaptive one-transaction purchases — V3.4.2</h2><p>The router requires its own immutable-bound 0x and LI.FI adapters. Each adapter must be proposed and activated after the on-chain six-hour delay. Normal user buys can then happen in one router call after any required USDC approval.</p></div></div><div className="notice">These deployer steps do not update the separate Indexio trading app. Never point a new vault at legacy V3.3.8 fixed-weight quotes. Smart-wallet batching/permit signatures require wallet- and token-specific integration.</div><div className="details"><div><span>Adaptive status</span><strong>{adaptiveReady?'Both adapters activated':'Not ready for funded trading'}</strong></div></div></section>
+   {adaptiveRows.map(([key,label,action,done],i)=>{const blocked=!rows.every(r=>Boolean(r[3]))||(i>0&&!adaptiveRows.slice(0,i).every(r=>Boolean(r[3])));
+     const cooldownKey=key==='adaptiveActivateZeroX'?'adaptiveZeroX':key==='adaptiveActivateLifi'?'adaptiveLifi':'';
+     const eta=cooldownKey?Number(suite.timelocks[cooldownKey]||0):0;
+     const waiting=!!cooldownKey&&(!eta||Date.now()<eta*1000);
+     return <section className="card" id={`deploy-step-${key}`} key={key}><div className="stepHead"><div className="stepNo">{String(14+i).padStart(2,'0')}</div><div><h2>{label}</h2><p>{done?'Confirmed / activated':waiting?`Activation waits for the on-chain adapter timelock${eta?` until ${new Date(eta*1000).toLocaleString()}`:''}. Use Refresh to read the current status.`:'One wallet confirmation after an on-chain preflight.'}</p></div></div>{done&&suite.addresses[String(key)]&&<a className="linkButton" href={url(suite.addresses[String(key)])} target="_blank" rel="noreferrer">View on BaseScan ↗</a>}{!done&&<button className="primary deploy" disabled={blocked||waiting||!!busy||!owner} onClick={()=>{setError('');setErrorStep('');(action as ()=>Promise<void>)().catch((e:any)=>{setErrorStep(key);setError(e?.message||String(e))})}}>Continue: {label}</button>}{errorStep===key&&error&&<div role="alert" className="notice danger">{error}</div>}</section>})}
    <section className="card"><div className="stepHead"><div className="stepNo">VERIFY</div><div><h2>Etherscan verification</h2><p>Uses the server-side Etherscan V2 route. Add <code>ETHERSCAN_API_KEY</code> in Vercel, redeploy once, then verify these same deployed addresses.</p></div></div>
     {verificationTargets.length===0?<div className="notice">Deployed contracts will appear here automatically.</div>:verificationTargets.map(target=>{const status=suite.verification[target.key]||'idle';return <div className="deploymentRecordRow" key={target.key}><div><span>{target.label.toUpperCase()}</span><strong>{target.address}</strong><small className={status==='verified'?'good':status==='error'?'bad':''}>{status==='verified'?'Verified on BaseScan ✓':status==='pending'?'Verification processing…':status==='error'?'Verification needs retry':'Not verified yet'}</small></div><button className="ghost compact" disabled={!!busy} onClick={()=>verifyTarget(target)}>{busy===`verify:${target.key}`?'Checking…':status==='verified'?'Check again':status==='pending'?'Check status':'Verify source'}</button></div>})}
     <button className="secondary" style={{marginTop:12}} disabled={!!busy||verificationTargets.length===0} onClick={verifyAll}>{busy==='verify-all'?'Verifying contracts…':'Verify all deployed contracts'}</button>
    </section>
    <section className="card"><div className="stepHead"><div className="stepNo">COPY</div><div><h2>Indexio app integration record</h2><p>Copy the readable deployment record for your notes or the JSON configuration for wiring this release into Indexio later.</p></div></div>
-    <div className="details"><div><span>Factory</span><code>{suite.addresses.factory||'Not deployed'}</code></div><div><span>Vault deployer</span><code>{suite.addresses.vaultDeployer||'Not deployed'}</code></div><div><span>Execution router</span><code>{suite.addresses.executionRouter||'Not deployed'}</code></div><div><span>Vault code hash</span><code>{indexioV34VaultCreationCodeHash}</code></div></div>
+    <div className="details"><div><span>Factory</span><code>{suite.addresses.factory||'Not deployed'}</code></div><div><span>Vault deployer</span><code>{suite.addresses.vaultDeployer||'Not deployed'}</code></div><div><span>Execution router</span><code>{suite.addresses.executionRouter||'Not deployed'}</code></div><div><span>Vault code hash</span><code>{indexioV34VaultCreationCodeHash}</code></div><div><span>Adaptive router</span><code>{suite.addresses.adaptiveRouter||'Not deployed'}</code></div></div>
     <button className="primary" style={{marginTop:12}} onClick={()=>copyText(deploymentRecord,'Complete deployment record copied.')}>Copy deployment record</button><button className="ghost" style={{marginTop:10}} onClick={()=>copyText(JSON.stringify(integrationData,null,2),'Indexio app integration JSON copied.')}>Copy app integration JSON</button>
    </section>
   </>:<>
