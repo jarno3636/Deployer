@@ -3,12 +3,12 @@
   "version": "1.1.0",
   "private": true,
   "scripts": {
-    "predev": "npm run compile:indexio-v34 && npm run compile:indexio-v342-adaptive && npm run check:indexio-v342-build && npm run compile:indexio-v338 && npm run compile:indexio-pay",
+    "predev": "npm run compile:indexio-pay-v2 && npm run compile:indexio-v34 && npm run compile:indexio-v342-adaptive && npm run check:indexio-v342-build && npm run compile:indexio-v338 && npm run compile:indexio-pay",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "check:artifacts": "node scripts/check-artifacts.mjs",
-    "prebuild": "npm run check:indexio-v334 && npm run check:indexio-v34 && npm run check:indexio-v342-patch && npm run compile:indexio-v34 && npm run compile:indexio-v342-adaptive && npm run check:indexio-v342-build && npm run compile:scanarc && npm run compile:indexio && npm run compile:indexio-v25 && npm run compile:indexio-v3 && npm run compile:indexio-v338 && npm run compile:indexio-adaptive-buy && npm run compile:indexio-pay",
+    "prebuild": "npm run check:indexio-v334 && npm run check:indexio-v34 && npm run check:indexio-v342-patch && npm run compile:indexio-v34 && npm run compile:indexio-v342-adaptive && npm run check:indexio-v342-build && npm run compile:scanarc && npm run compile:indexio && npm run compile:indexio-v25 && npm run compile:indexio-v3 && npm run compile:indexio-v338 && npm run compile:indexio-adaptive-buy && npm run compile:indexio-pay && npm run compile:indexio-pay-v2",
     "compile:scanarc": "node scripts/compile-scanarc-router.mjs",
     "compile:bridge": "node scripts/compile-scanarc-bridge.mjs",
     "compile:indexio": "node scripts/compile-indexio.mjs && node scripts/compile-indexio-adapter.mjs",
@@ -29,7 +29,9 @@
     "compile:indexio-v34": "node scripts/compile-indexio-v34.mjs",
     "check:indexio-v342-build": "node scripts/check-indexio-v342-build.mjs",
     "release:indexio-v342": "npm run build",
-    "check:indexio-v34": "node scripts/check-indexio-v34.mjs"
+    "check:indexio-v34": "node scripts/check-indexio-v34.mjs",
+    "compile:indexio-pay-v2": "node scripts/compile-indexio-pay-v2.mjs",
+    "test:indexio-pay-v2": "forge test --match-path test/IndexioMultiAssetPayV2.t.sol -vv"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.2",
